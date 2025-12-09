@@ -794,6 +794,9 @@ int main() {
 
             time_output << time_total << " ";
 
+            T_wall_output << "\n";
+            T_sodium_output << "\n";
+
             time_output.flush();
             T_wall_output.flush();
             T_sodium_output.flush();
