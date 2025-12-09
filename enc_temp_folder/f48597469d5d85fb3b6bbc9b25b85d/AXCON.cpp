@@ -497,7 +497,7 @@ int main() {
     std::ofstream mesh_output(case_chosen + "/mesh.txt", std::ios::app);
     mesh_output << std::setprecision(8);
 
-    for (int i = 0; i < N; ++i) mesh_output << i * dz << " ";
+    for (int i = 0; i < N; ++i) mesh_output << i * dz << ", ";
 
     mesh_output.flush();
     mesh_output.close();
@@ -788,11 +788,11 @@ int main() {
 
             for (int i = 0; i < N; ++i) {
 
-                T_wall_output << T_w[i] << " ";
-                T_sodium_output << T_Na[i] << " ";
+                T_wall_output << T_w[i] << ", ";
+                T_sodium_output << T_Na[i] << ", ";
             }
 
-            time_output << time_total << " ";
+            time_output << time_total << ", ";
 
             time_output.flush();
             T_wall_output.flush();
