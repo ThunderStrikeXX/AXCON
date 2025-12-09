@@ -337,72 +337,6 @@ std::string select_case() {
 
 #pragma endregion
 
-// =======================================================================
-//
-//                           [UPDATING FUNCTIONS]
-//
-// =======================================================================
-
-#pragma region updating_functions
-
-struct Cell {
-
-    double T_w;      /// Wall temperature [K]
-
-    double T_Na;     /// Sodium effective temperature [K]
-    double H_Na;     /// Volumetric enthalpy sodium [J/m3]
-    double fl;       /// Sodium liquid fraction [0...1]
-
-    double rho_Na;   /// kg/m3
-    double cp_Na;    /// J/kgK
-    double k_Na;     /// W/mK
-};
-
-static void update_cell(Cell& C) {
-
-    const double T = C.T_Na;
-	const double T_solidus = solid_sodium::T_solidus;
-	const double T_liquidus = solid_sodium::T_liquidus;
-	const double H_lat = solid_sodium::H_lat;
-
-    if (T <= T_solidus) {
-
-        C.fl = 0.0;
-        C.rho_Na = solid_sodium::rho(T);
-        C.cp_Na = solid_sodium::cp(T);
-        C.k_Na = solid_sodium::k(T);
-
-        C.H_Na = C.rho_Na * C.cp_Na * T;
-        return;
-    }
-
-    if (T >= T_liquidus) {
-
-        C.fl = 1.0;
-        C.rho_Na = liquid_sodium::rho(T);
-        C.cp_Na = liquid_sodium::cp(T);
-        C.k_Na = liquid_sodium::k(T);
-
-        const double Hs = solid_sodium::rho(T) * solid_sodium::cp(T) * T_solidus;
-        C.H_Na = Hs + C.rho_Na * H_lat + C.rho_Na * C.cp_Na * (T - T_liquidus);
-        return;
-    }
-
-	// Linear interpolation in mushy region
-    const double w = (T - T_solidus) / (T_liquidus - T_solidus);
-
-    C.fl = w;
-    C.rho_Na = solid_sodium::rho(T) + w * (liquid_sodium::rho(T) - solid_sodium::rho(T));
-    C.cp_Na = solid_sodium::cp(T) + w * (liquid_sodium::cp(T) - solid_sodium::cp(T));
-    C.k_Na = solid_sodium::k(T) + w * (liquid_sodium::k(T) - solid_sodium::k(T));
-
-    const double Hs = solid_sodium::rho(T) * solid_sodium::cp(T) * T_solidus;
-    const double Hl = Hs + liquid_sodium::rho(T) * H_lat;
-    C.H_Na = Hs + w * (Hl - Hs);
-}
-
-#pragma endregion
-
 int main() {
 
     // =======================================================================
@@ -417,10 +351,13 @@ int main() {
     constexpr double M_PI = 3.14159265358979323846;
 
     /// Simulation parameters
-    constexpr int N = 100;                  /// Cell number [-]
+    constexpr int N = 20;                  /// Cell number [-]
     constexpr double L_pipe = 1.0;          /// Length of the pipe domain [m]
-    constexpr double dz = L_pipe / N;        /// Spatial step [m]
-    constexpr double dt = 1e-3;             /// Temporal step [s]
+    constexpr double dz = L_pipe / N;       /// Spatial step [m]
+    constexpr double dt_user = 10;                       /// Temporal step [s]
+	constexpr double maxPicard = 100;       /// Maximum Picard iterations
+	constexpr double picTolerance = 1e-4;   /// Picard convergence tolerance
+	constexpr int nvar = B * N;             /// Total number of variables
 
     /// Geometric parameters
     constexpr double r_o = 0.01335;         /// Outer wall radius [m]
@@ -439,15 +376,14 @@ int main() {
     /// Geometric sections and perimeters
     constexpr double A_w = M_PI * (r_o * r_o - r_i * r_i);
     constexpr double A_Na = M_PI * (r_i * r_i - r_v * r_v);
-    constexpr double P_ws = 2 * M_PI * r_i;
+    constexpr double P_o = 2 * M_PI * r_o;
 
     ///  BCs
     constexpr double h_conv = 20.0;             /// Convective heat transfer coefficient [W/m2K]
     constexpr double T_env = 280.0;             /// Environmental temperature [K]
     constexpr double emissivity = 0.8;          /// Emissivity [-]
     constexpr double sigma = 5.67e-8;           /// Stefan-Boltzmann constant [W/m2K4]
-    constexpr double h_ws = 2000000.0;          /// HTC sodium-wall [W/m2K] (placeholder)
-    constexpr double power = 1000.0;            /// Total power [W]
+    constexpr double power = 100.0;            /// Total power [W]
     constexpr double T_init = 280.0;            /// Initial temperature [K]
 
     /// Evaporator
@@ -465,14 +401,71 @@ int main() {
 
 	// New time step variables
     std::vector<double> T_w(N);
+    std::vector<double> rho_w(N);
+    std::vector<double> cp_w(N);
+    std::vector<double> k_w(N);
+
 	std::vector<double> T_Na(N);
+    std::vector<double> fl(N);
+    std::vector<double> rho_Na(N);
+    std::vector<double> cp_Na(N);
+    std::vector<double> k_Na(N);
+    std::vector<double> H_Na(N);
+
+    int firstNa = -1;
+    int lastNa = -1;
+
+    for (int i = 0; i < N; ++i) {
+        if (z[i] >= wick_start && z[i] <= wick_end) {
+            if (firstNa < 0) firstNa = i;
+            lastNa = i;
+        }
+    }
+
+    for (int i = 0; i < N; ++i) {
+
+        const bool hasNa = (i >= firstNa && i <= lastNa);
+
+        T_w[i] = T_init;
+        rho_w[i] = steel::rho(T_init);
+        cp_w[i] = steel::cp(T_init);
+        k_w[i] = steel::k(T_init);
+
+        T_Na[i] = hasNa ? T_init : 0.0;
+        fl[i] = 0.0;
+        rho_Na[i] = hasNa ? solid_sodium::rho(T_init) : 0.0;
+        cp_Na[i] = hasNa ? solid_sodium::cp(T_init) : 0.0;
+        k_Na[i] = hasNa ? solid_sodium::k(T_init) : 0.0;
+        H_Na[i] = hasNa ? rho_Na[i] * cp_Na[i] * T_init : 0.0;
+    }
 
     // Old time step variables
-    std::vector<double> T_w_old(N, T_init);
-    std::vector<double> T_Na_old(N, T_init);
+    std::vector<double> T_w_old = T_w;
+    std::vector<double> rho_w_old = rho_w;
+    std::vector<double> cp_w_old = cp_w;
+    std::vector<double> k_w_old = k_w;
+
+    std::vector<double> T_Na_old = T_Na;
+    std::vector<double> fl_old = fl;
+    std::vector<double> rho_Na_old = rho_Na;
+    std::vector<double> cp_Na_old = cp_Na;
+    std::vector<double> k_Na_old = k_Na;
+    std::vector<double> H_Na_old = H_Na;
+
+    // Picard values
+    std::vector<double> T_w_iter = T_w;
+    std::vector<double> rho_w_iter = rho_w;
+    std::vector<double> cp_w_iter = cp_w;
+    std::vector<double> k_w_iter = k_w;
+
+    std::vector<double> T_Na_iter = T_Na;
+    std::vector<double> fl_iter = fl;
+    std::vector<double> rho_Na_iter = rho_Na;
+    std::vector<double> cp_Na_iter = cp_Na;
+    std::vector<double> k_Na_iter = k_Na;
+    std::vector<double> H_Na_iter = H_Na;
 
     std::vector<double> q_ow(N, 0.0);     /// Outer wall heat flux [W/m2]
-    std::vector<double> Q_ow(N, 0.0);     /// Outer wall heat source [W/m3]
 
     // Blocks definition
     std::vector<SparseBlock> L(N), D(N), R(N);
@@ -507,153 +500,271 @@ int main() {
     mesh_output.flush();
     mesh_output.close();
 
-    int firstNa = -1;
-    int lastNa = -1;
-
-    for (int i = 0; i < N; ++i) {
-        if (z[i] >= wick_start && z[i] <= wick_end) {
-            if (firstNa < 0) firstNa = i;
-            lastNa = i;
-        }
-    }
-
-    std::vector<Cell> cell(N);
-
-	/// Initial conditions
-    for (int i = 0; i < N; ++i) {
-
-        const bool hasNa = (i >= firstNa && i <= lastNa);
-
-		cell[i].T_w = T_init;
-        cell[i].T_Na = hasNa ? T_init : 0.0;
-        cell[i].fl = 0.0;
-
-        cell[i].rho_Na = hasNa ? solid_sodium::rho(T_init) : 0.0;
-        cell[i].cp_Na = hasNa ? solid_sodium::cp(T_init) : 0.0;
-        cell[i].k_Na = hasNa ? solid_sodium::k(T_init) : 0.0;
-        cell[i].H_Na = hasNa ? cell[i].rho_Na * cell[i].cp_Na * T_init : 0.0;
-    }
-
 	bool all_melted = false;
+
+    int halves = 0;
+    double L1 = 0.0;
+    double dt;
 
 	// Temporal loop
     while(all_melted == false) {
 
-		/// Power distribution along the wall
-        for(int i = 0; i < N; ++i) {
-
-            const double zi = z[i];
-
-            if (zi >= (evaporator_start - delta_h) && zi < evaporator_start) {
-                double x = (zi - (evaporator_start - delta_h)) / delta_h;
-                q_ow[i] = 0.5 * q0 * (1.0 - std::cos(M_PI * x));
-            }
-            else if (zi >= evaporator_start && zi <= evaporator_end) {
-                q_ow[i] = q0;
-            }
-            else if (zi > evaporator_end && zi <= (evaporator_end + delta_h)) {
-                double x = (zi - evaporator_end) / delta_h;
-                q_ow[i] = 0.5 * q0 * (1.0 + std::cos(M_PI * x));
-            }
-
-            double conv = h_conv * (cell[i].T_w - T_env);           /// [W/m^2]
-            double irr = emissivity * sigma *
-                (std::pow(cell[i].T_w, 4) - std::pow(T_env, 4));    /// [W/m^2]
-
-            if (zi >= condenser_start && zi < condenser_start + delta_c) {
-                double x = (zi - condenser_start) / delta_c;
-                double w = 0.5 * (1.0 - std::cos(M_PI * x));
-                q_ow[i] = -(conv + irr) * w;
-            }
-            else if (zi >= condenser_start + delta_c) {
-                q_ow[i] = -(conv + irr);
-            }
-	    }
-
         std::vector<double> A;
         std::vector<double> rhs;
 
-        const int nvar = B * N;
+		const double T_solidus = solid_sodium::T_solidus;
+        const double T_liquidus = solid_sodium::T_liquidus;
+        const double H_lat = solid_sodium::H_lat;
 
-        for (int i = 1; i < N - 1; ++i) {
+        int pic = 0;        /// Outside to check if convergence is reached
 
-            const bool hasNa = (i >= firstNa && i <= lastNa);
+        /// Picard iterations
+        for (pic = 0; pic < maxPicard; pic++) {
 
-            const double Cw = cell[i].T_w * steel::cp(cell[i].T_w) * A_w * dz;
-            const double Kw = steel::k(cell[i].T_w) * A_w;
-            const double aw = Kw / (dz * dz);
+            dt = dt_user;
+            dt *= std::pow(0.5, halves);
 
-            double aNa = 0.0;
-            double S = 0.0;
-            double CNa_eff = 0.0;
+            // T_iter = T (new)
+            T_w_iter = T_w;
+            rho_w_iter = rho_w;
+            cp_w_iter = cp_w;
+            k_w_iter = k_w;
 
-            if (hasNa) {
+            T_Na_iter = T_Na;
+            fl_iter = fl;
+            rho_Na_iter = rho_Na;
+            cp_Na_iter = cp_Na;
+            k_Na_iter = k_Na;
+            H_Na_iter = H_Na;
 
-                const double kNa = cell[i].k_Na;
-                aNa = kNa / (dz * dz);
+            /// Loop on nodes
+            for (int i = 1; i < N - 1; ++i) {
 
-                S = h_ws * P_ws;
+                const double zi = z[i];
 
-                double dfdT = 0.0;
-                if (cell[i].fl > 0.0 && cell[i].fl < 1.0)
-                    dfdT = 1.0 / (solid_sodium::T_liquidus - solid_sodium::T_solidus);
+                if (zi >= (evaporator_start - delta_h) && zi < evaporator_start) {
+                    double x = (zi - (evaporator_start - delta_h)) / delta_h;
+                    q_ow[i] = 0.5 * q0 * (1.0 - std::cos(M_PI * x));
+                }
+                else if (zi >= evaporator_start && zi <= evaporator_end) {
+                    q_ow[i] = q0;
+                }
+                else if (zi > evaporator_end && zi <= (evaporator_end + delta_h)) {
+                    double x = (zi - evaporator_end) / delta_h;
+                    q_ow[i] = 0.5 * q0 * (1.0 + std::cos(M_PI * x));
+                }
 
-                const double dH_dT = cell[i].rho_Na * (cell[i].cp_Na + solid_sodium::H_lat * dfdT);
+                double conv = h_conv * (T_w_iter[i] - T_env);           /// [W/m^2]
+                double irr = emissivity * sigma *
+                    (std::pow(T_w_iter[i], 4) - std::pow(T_env, 4));    /// [W/m^2]
 
-                CNa_eff = dH_dT * A_Na * dz;
+                if (zi >= condenser_start && zi < condenser_start + delta_c) {
+                    double x = (zi - condenser_start) / delta_c;
+                    double w = 0.5 * (1.0 - std::cos(M_PI * x));
+                    q_ow[i] = -(conv + irr) * w;
+                }
+                else if (zi >= condenser_start + delta_c) {
+                    q_ow[i] = -(conv + irr);
+                }
+                
+                const bool hasNa = (i >= firstNa && i <= lastNa);
+
+                const double k_w = steel::k(T_w_iter[i]);           /// W/mK   
+                const double rho_w = steel::rho(T_w_iter[i]);       /// kg/m3
+			    const double cp_w = steel::cp(T_w_iter[i]);         /// J/kgK
+
+			    const double C_w = rho_w * cp_w * A_w;      /// J/mK
+                const double K_w = k_w * A_w;               /// Wm/K
+                const double a_w = K_w / (dz * dz);         /// W/mK
+
+			    const double T_Na = T_Na_iter[i];           /// K
+                double a_Na = 0.0;
+                double K_Na = 0.0;
+                double C_Na = 0.0;
+                double C_Na_eff = 0.0;
+
+                double h_ws = 0.0;                          
+
+                if (hasNa) {
+
+                    const double k_Na = k_Na_iter[i];        /// W/mK
+				    const double rho_Na = rho_Na_iter[i];    /// kg/m3
+                    const double cp_Na = cp_Na_iter[i];      /// J/kgK
+
+                    C_Na = rho_Na * cp_Na * A_Na;      /// J/mK
+                    K_Na = k_Na * A_Na;                /// Wm/K
+                    a_Na = K_Na / (dz * dz);           /// W/mK
+
+				    const double R_tot = 
+                        + std::log(r_o / r_i) / (2 * M_PI * k_w) 
+                        + std::log(r_i / r_v) / (2 * M_PI * k_Na);   /// mK/W
+
+				    h_ws = 1.0 / R_tot;  /// W/mK
+
+                    double dfdT = 0.0;
+                    if (fl_iter[i] > 0.0 && fl_iter[i] < 1.0)
+                        dfdT = 1.0 / (T_liquidus - T_solidus);
+
+                    const double dH_dT = rho_Na * (cp_Na + H_lat * dfdT);
+
+                    C_Na_eff = dH_dT * A_Na;    /// J/mK
+                }
+
+                const double D11 = C_w / dt + 2.0 * a_w + h_ws;     /// W/mK
+                const double D12 = -h_ws;
+                const double D21 = -h_ws;
+                const double D22 = (hasNa ? (C_Na_eff / dt + 2.0 * a_Na + h_ws) : 1.0);
+
+                add(D[i], 0, 0, D11);
+                add(D[i], 0, 1, D12);
+                add(D[i], 1, 0, D21);
+                add(D[i], 1, 1, D22);
+
+                add(L[i], 0, 0, -a_w);                                      /// W/mK
+                if (hasNa && i > firstNa) add(L[i], 1, 1, -a_Na);           /// W/mK
+
+                add(R[i], 0, 0, -a_w);                                      /// W/mK
+                if (hasNa && i < lastNa) add(R[i], 1, 1, -a_Na);            /// W/mK
+
+                Q[i][0] = C_w / dt * T_w_old[i] + q_ow[i] * P_o;            /// W/m
+                Q[i][1] = hasNa ? (C_Na_eff / dt * T_Na_old[i]) : 0.0;      /// W/m
             }
 
-            const double D11 = Cw / dt + 2.0 * aw + S;
-            const double D12 = -S;
-            const double D21 = -S;
-            const double D22 = (hasNa ? (CNa_eff / dt + 2.0 * aNa + S) : 1.0);
+            // BCs
+            add(D[0], 0, 0, 1.0);
+            add(R[0], 0, 0, -1.0);
+            add(D[0], 1, 1, 1.0);
+            Q[0][0] = 0.0;
 
-            add(D[i], 0, 0, D11);
-            add(D[i], 0, 1, D12);
-            add(D[i], 1, 0, D21);
-            add(D[i], 1, 1, D22);
+            add(D[firstNa], 1, 0, 0.0);
+            add(R[firstNa], 0, 1, 0.0);
+            add(D[firstNa], 1, 1, 1.0);
+            add(R[firstNa], 1, 1, -1.0);
+            Q[firstNa][1] = 0.0;
 
-            Q[i][0] = Cw / dt * cell[i].T_w + q_ow[i] * P_ws;
-            Q[i][1] = hasNa ? (CNa_eff / dt * cell[i].T_Na) : 0.0;
+            add(D[N - 1], 0, 0, 1.0);
+            add(L[N - 1], 0, 0, -1.0);
+            add(D[N - 1], 1, 1, 1.0);
+            Q[N - 1][0] = 0.0;
 
-            add(L[i], 0, 0, -aw);
-            if (hasNa && i > firstNa) add(L[i], 1, 1, -aNa);
+            add(D[lastNa], 1, 0, 0.0);
+            add(L[lastNa], 0, 1, 0.0);
+            add(D[lastNa], 1, 1, 1.0);
+            add(L[lastNa], 1, 1, -1.0);
+            Q[lastNa][1] = 0.0;
 
-            add(R[i], 0, 0, -aw);
-            if (hasNa && i < lastNa) add(R[i], 1, 1, -aNa);
+            solve_block_tridiag(L, D, R, Q, X);
+
+            for (int i = 0; i < N; ++i){
+
+                T_w[i] = X[i][0];
+                T_Na[i] = X[i][1];
+            }
+
+            // Calculate Picard error
+            L1 = 0.0;
+            double Aold, Anew, denom, eps;
+
+            for (int i = 0; i < N; ++i) {
+
+                Aold = T_w_iter[i];
+                Anew = T_w[i];
+                denom = 0.5 * (std::abs(Aold) + std::abs(Anew));
+                eps = denom > 1e-12 ? std::abs((Anew - Aold) / denom) : std::abs(Anew - Aold);
+                L1 += eps;
+
+                Aold = T_Na_iter[i];
+                Anew = T_Na[i];
+                denom = 0.5 * (std::abs(Aold) + std::abs(Anew));
+                eps = denom > 1e-12 ? std::abs((Anew - Aold) / denom) : std::abs(Anew - Aold);
+                L1 += eps;
+            }
+
+            if (L1 < picTolerance){
+                halves = 0;             // Reset halves if Picard converged
+                break;                  // Picard converged
+            }
+
+            for(int i = 0 ; i < N; ++i) {
+
+				// T_iter = T (new)
+                T_w_iter = T_w;
+                T_Na_iter = T_Na;
+
+                k_w[i] = steel::k(T_w_iter[i]);
+                rho_w[i] = steel::rho(T_w_iter[i]);
+                cp_w[i] = steel::cp(T_w_iter[i]);
+
+                if (T_Na_iter[i] <= T_solidus) {
+
+                    fl[i] = 0.0;
+                    rho_Na[i] = solid_sodium::rho(T_Na_iter[i]);
+                    cp_Na[i] = solid_sodium::cp(T_Na_iter[i]);
+                    k_Na[i] = solid_sodium::k(T_Na_iter[i]);
+
+                    H_Na[i] = rho_Na_iter[i] * cp_Na_iter[i] * T_Na_iter[i];
+
+                } else if (T_Na_iter[i] >= T_liquidus) {
+
+                    fl[i] = 1.0;
+                    rho_Na[i] = liquid_sodium::rho(T_Na_iter[i]);
+                    cp_Na[i] = liquid_sodium::cp(T_Na_iter[i]);
+                    k_Na[i] = liquid_sodium::k(T_Na_iter[i]);
+
+                    const double Hs = solid_sodium::rho(T_Na_iter[i]) * solid_sodium::cp(T_Na_iter[i]) * T_solidus;
+                    H_Na[i] = Hs + rho_Na_iter[i] * H_lat + rho_Na_iter[i] * cp_Na_iter[i] * (T_Na_iter[i] - T_liquidus);
+
+                } else {
+
+                    // Linear interpolation in mushy region
+                    const double w = (T_Na_iter[i] - T_solidus) / (T_liquidus - T_solidus);
+
+                    fl[i] = w;
+                    rho_Na[i] = solid_sodium::rho(T_Na_iter[i]) + w * (liquid_sodium::rho(T_Na_iter[i]) - solid_sodium::rho(T_Na_iter[i]));
+                    cp_Na[i] = solid_sodium::cp(T_Na_iter[i]) + w * (liquid_sodium::cp(T_Na_iter[i]) - solid_sodium::cp(T_Na_iter[i]));
+                    k_Na[i] = solid_sodium::k(T_Na_iter[i]) + w * (liquid_sodium::k(T_Na_iter[i]) - solid_sodium::k(T_Na_iter[i]));
+
+                    const double Hs = solid_sodium::rho(T_Na_iter[i]) * solid_sodium::cp(T_Na_iter[i]) * T_solidus;
+                    const double Hl = Hs + liquid_sodium::rho(T_Na_iter[i]) * H_lat;
+                    H_Na[i] = Hs + w * (Hl - Hs);
+                }
+            }
         }
 
-        // BCs
-        add(D[0], 0, 0, 1.0);
-        add(R[0], 0, 0, -1.0);
-        add(D[0], 1, 1, 1.0);
-        Q[0][0] = 0.0;
+        // Picard converged
+        if (pic != maxPicard) {
 
-        add(D[firstNa], 1, 0, 0.0);
-        add(R[firstNa], 0, 1, 0.0);
-        add(D[firstNa], 1, 1, 1.0);
-        add(R[firstNa], 1, 1, -1.0);
-        Q[firstNa][1] = 0.0;
+            // T_old = T_new
+            T_w_old = T_w;
+            rho_w_old = rho_w;
+            cp_w_old = cp_w;
+            k_w_old = k_w;
 
-        add(D[N - 1], 0, 0, 1.0);
-        add(L[N - 1], 0, 0, -1.0);
-        add(D[N - 1], 1, 1, 1.0);
-        Q[N - 1][0] = 0.0;
+            T_Na_old = T_Na;
+            fl_old = fl;
+            rho_Na_old = rho_Na;
+            cp_Na_old = cp_Na;
+            k_Na_old = k_Na;
+            H_Na_old = H_Na;
 
-        add(D[lastNa], 1, 0, 0.0);
-        add(L[lastNa], 0, 1, 0.0);
-        add(D[lastNa], 1, 1, 1.0);
-        add(L[lastNa], 1, 1, -1.0);
-        Q[lastNa][1] = 0.0;
+        }
+        else {
 
-        solve_block_tridiag(L, D, R, Q, X);
+            // Rollback to previous time step
+            // T_new = T_old
+            T_w = T_w_old;
+            rho_w = rho_w_old;
+            cp_w = cp_w_old;
+            k_w = k_w_old;
 
-        for (int i = 0; i < N; ++i){
+            T_Na = T_Na_old;
+            fl = fl_old;
+            rho_Na = rho_Na_old;
+            cp_Na = cp_Na_old;
+            k_Na = k_Na_old;
+            H_Na = H_Na_old;
 
-            cell[i].T_w = X[i][0];
-            cell[i].T_Na = X[i][1];
-
-            update_cell(cell[i]);
+            halves += 1;      // Reduce time step if max Picard iterations reached
         }
 
 		/// Check if all sodium is melted
@@ -662,13 +773,13 @@ int main() {
 
             const bool hasNa = (i >= firstNa && i <= lastNa);
 
-            if (hasNa && cell[i].fl < 0.999)  all_melted = false;
+            if (hasNa && fl[i] < 0.999)  all_melted = false;
         }
     }
 
     for (int i = 0; i < N; ++i) {
         
-        T_wall_output << cell[i].T_w << ", ";
-        T_sodium_output << cell[i].T_Na << ", ";
+        T_wall_output << T_w[i] << ", ";
+        T_sodium_output << T_Na[i] << ", ";
     }
 }
