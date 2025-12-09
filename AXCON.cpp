@@ -13,61 +13,21 @@
 #include <cassert>
 #include <string>
 
+bool warnings = false;
+
+#include "libs/steel.h"
+#include "libs/liquid_sodium.h"
+#include "libs/solid_sodium.h"
+
 // =======================================================================
 //
 //                          [VARIOUS ALGORITHMS]
 //
 // =======================================================================
 
-#pragma region solving_algorithms
-/**
- * @brief Solves a tridiagonal system of linear equations A*x = d using the Thomas Algorithm (TDMA).
- *
- * The method consists of two main phases: forward elimination and back substitution,
- * which is optimized for the sparse tridiagonal structure.
- *
- * @param a The sub-diagonal vector (size N, with a[0] being zero/unused).
- * @param b The main diagonal vector (size N). Must contain non-zero elements.
- * @param c The super-diagonal vector (size N, with c[N-1] being zero/unused).
- * @param d The right-hand side vector (size N).
- * @return std::vector<double> The solution vector 'x' (size N).
- * * @note This implementation assumes the system is diagonally dominant or otherwise
- * stable, as it does not include pivoting. The vectors 'a', 'b', 'c', and 'd' must
- * all have the same size N, corresponding to the size of the system.
- */
-std::vector<double> solveTridiagonal(const std::vector<double>& a,
-    const std::vector<double>& b,
-    const std::vector<double>& c,
-    const std::vector<double>& d) {
-
-    int n = b.size();
-    std::vector<double> c_star(n, 0.0);
-    std::vector<double> d_star(n, 0.0);
-    std::vector<double> x(n, 0.0);
-
-    c_star[0] = c[0] / b[0];
-    d_star[0] = d[0] / b[0];
-
-    for (int i = 1; i < n; i++) {
-
-        double m = b[i] - a[i] * c_star[i - 1];
-        c_star[i] = c[i] / m;
-        d_star[i] = (d[i] - a[i] * d_star[i - 1]) / m;
-    }
-
-    x[n - 1] = d_star[n - 1];
-
-    for (int i = n - 2; i >= 0; i--)
-        x[i] = d_star[i] - c_star[i] * x[i + 1];
-
-    return x;
-}
-
-#pragma endregion
-
 #pragma region solving_functions
 
-constexpr int B = 2;  // dimensione blocco
+constexpr int B = 2;  /// Block dimension
 
 // Definition of data structures 
 struct SparseBlock {
@@ -203,7 +163,6 @@ void lu_solve_mat(const DenseBlock& LU, const std::array<int, B>& piv,
 
 // ------------------------- Solve block-tridiagonal -------------------------
 
-
 // Block Thomas solver: performs forward elimination and back substitution on a block-tridiagonal system using per-block LU factorizations.
 void solve_block_tridiag(
     const std::vector<SparseBlock>& L_pipe,
@@ -309,6 +268,7 @@ auto add = [&](SparseBlock& B, int p, int q, double v) {
     B.val.push_back(v);
     };
 
+// Builds the full dense matrix from the sparse block-tridiagonal representation
 std::vector<std::vector<double>> build_dense(
     const std::vector<SparseBlock>& Lb,
     const std::vector<SparseBlock>& Db,
@@ -340,65 +300,50 @@ std::vector<std::vector<double>> build_dense(
     return M;
 }
 
+#pragma endregion
+
+#pragma region select_case
+
+std::string select_case() {
+
+    std::vector<std::string> cases;
+
+    for (const auto& entry : std::filesystem::directory_iterator(".")) {
+        if (entry.is_directory()) {
+            const std::string name = entry.path().filename().string();
+            if (name.rfind("case_", 0) == 0) cases.push_back(name);
+        }
+    }
+
+    if (cases.empty()) return "";
+
+    std::cout << "Cases found:\n";
+    for (size_t i = 0; i < cases.size(); ++i) {
+        std::cout << i << ": " << cases[i] << "\n";
+    }
+
+    std::cout << "Press ENTER for a new case. Input the number and press ENTER to load a case: ";
+
+    std::string s;
+    std::getline(std::cin, s);
+
+    if (s.empty()) return "";
+
+    int idx = std::stoi(s);
+    if (idx < 0 || idx >= static_cast<int>(cases.size())) return "";
+
+    return cases[idx];
+}
 
 #pragma endregion
 
 // =======================================================================
 //
-//                        [VARIABLES AND CONSTANTS]
+//                           [UPDATING FUNCTIONS]
 //
 // =======================================================================
 
-#pragma region variables_constants
-
-/// Mathematical constants
-constexpr double M_PI = 3.14159265358979323846;
-
-/// Simulation parameters
-constexpr int N = 100;                  //// Cell number [-]
-constexpr double L_pipe = 1.0;               //// Length of the domain [m]
-constexpr double dz = L_pipe/ N;            //// Spatial step [m]
-constexpr double dt = 1e-3;             //// Temporal step [s]
-
-/// Geometric parameters
-constexpr double r_o = 0.01335;         //// Outer wall radius [m]
-constexpr double r_i = 0.0112;          //// Wall-wick interface radius [m]
-constexpr double r_v = 0.01075;         //// Vapor-wick interface radius [m]
-
-/// Temperatures and latent heat
-constexpr double T_init = 280.0;        //// Initial temperature [K]
-constexpr double T_s = 371.0;           //// Solidus Na
-constexpr double T_l = 371.0;           //// Liquidus Na
-constexpr double L_lat_Na = 1.13e6;     //// J/kg
-constexpr double T_solidus = 370.5;     //// K
-constexpr double T_liquidus = 371.5;    //// K
-
-///  BCs
-const double h_conv = 20.0;          /// Convective heat transfer coefficient [W/m2K]
-const double T_env = 280.0;         /// Environmental temperature [K]
-const double emissivity = 0.8;     /// Emissivity [-]
-const double sigma = 5.67e-8;      /// Stefan-Boltzmann constant [W/m2K4]
-
-/// Sodium properties
-constexpr double rho_s_Na = 970.0;      /// kg/m3
-constexpr double rho_l_Na = 930.0;      /// kg/m3
-constexpr double cp_s_Na = 1200.0;      /// J/kgK
-constexpr double cp_l_Na = 1300.0;      /// J/kgK
-constexpr double k_s_Na = 140.0;        /// W/mK
-constexpr double k_l_Na = 70.0;         /// W/mK
-
-/// Steel properties
-constexpr double rho_w = 8000.0;  /// kg/m3
-constexpr double cp_w = 500.0;   /// J/kgK
-constexpr double k_w = 16.0;    /// W/mK
-
-///  Geometric sections and perimeters
-constexpr double A_w = M_PI * (r_o * r_o - r_i * r_i);
-constexpr double A_Na = M_PI * (r_i * r_i - r_v * r_v);
-constexpr double P_ws = 2 * M_PI * r_i;
-
-/// HTC sodium-wall
-constexpr double h_ws = 2000.0;  /// W / m2K (placeholder)
+#pragma region updating_functions
 
 struct Cell {
 
@@ -413,112 +358,154 @@ struct Cell {
     double k_Na;     /// W/mK
 };
 
-constexpr double rho_s = 970.0;         /// kg/m3
-constexpr double rho_l = 930.0;         /// kg/m3
-constexpr double cp_s = 1200.0;         /// J/kgK
-constexpr double cp_l = 1300.0;         /// J/kgK
-constexpr double k_s = 140.0;           /// W/mK
-constexpr double k_l = 70.0;            /// W/mK
-
-///  Heat pipe parameters
-const double evaporator_start = 0.1 * L_pipe;
-const double evaporator_end = 0.2 * L_pipe;
-const double condenser_length = 0.2 * L_pipe;
-const double power = 1000.0;          /// Total power [W]
-
-///  Solid sodium region
-const double wick_start = 0.1 * L_pipe;
-const double wick_end = 0.2 * L_pipe;
-
-/// Evaporator
-const double Lh = evaporator_end - evaporator_start;
-const double delta_h = 0.01;
-const double Lh_eff = Lh + delta_h;
-const double q0 = power / (2.0 * M_PI * r_o * Lh_eff);      /// [W/m^2]
-
-/// Condenser
-const double delta_c = 0.05;
-const double condenser_start = L_pipe - condenser_length;
-const double condenser_end = L_pipe;
-
-std::vector<double> a(N), b(N), c(N), d(N);
-
-const double Cw = rho_w * cp_w * A_w * dz;
-const double Kw = k_w * A_w;
-const double aw = Kw / (dz * dz);
-
-static std::vector<double> z(N);
-
-std::vector<double> q_ow(N, 0.0);     /// Outer wall heat flux [W/m2]
-std::vector<double> Q_ow(N, 0.0);     /// Outer wall heat source [W/m3]
-
-std::vector<double> T_w(N);
-
-// Blocks definition
-std::vector<SparseBlock> L(N), D(N), R(N);
-std::vector<VecBlock> Q(N), X(N);
-
-std::vector<double> T_w_old(N, T_init);
-std::vector<double> T_Na_old(N, T_init);
-
-#pragma endregion
-
-// =======================================================================
-//
-//                           [UPDATING FUNCTIONS]
-//
-// =======================================================================
-
-#pragma region updating_functions
-
-void update_cell(Cell& C) {
+static void update_cell(Cell& C) {
 
     const double T = C.T_Na;
+	const double T_solidus = solid_sodium::T_solidus;
+	const double T_liquidus = solid_sodium::T_liquidus;
+	const double H_lat = solid_sodium::H_lat;
 
     if (T <= T_solidus) {
+
         C.fl = 0.0;
-        C.rho_Na = rho_s_Na;
-        C.cp_Na = cp_s_Na;
-        C.k_Na = k_s_Na;
+        C.rho_Na = solid_sodium::rho(T);
+        C.cp_Na = solid_sodium::cp(T);
+        C.k_Na = solid_sodium::k(T);
 
         C.H_Na = C.rho_Na * C.cp_Na * T;
         return;
     }
 
     if (T >= T_liquidus) {
-        C.fl = 1.0;
-        C.rho_Na = rho_l_Na;
-        C.cp_Na = cp_l_Na;
-        C.k_Na = k_l_Na;
 
-        const double Hs = rho_s_Na * cp_s_Na * T_solidus;
-        C.H_Na = Hs + C.rho_Na * L_lat_Na + C.rho_Na * C.cp_Na * (T - T_liquidus);
+        C.fl = 1.0;
+        C.rho_Na = liquid_sodium::rho(T);
+        C.cp_Na = liquid_sodium::cp(T);
+        C.k_Na = liquid_sodium::k(T);
+
+        const double Hs = solid_sodium::rho(T) * solid_sodium::cp(T) * T_solidus;
+        C.H_Na = Hs + C.rho_Na * H_lat + C.rho_Na * C.cp_Na * (T - T_liquidus);
         return;
     }
 
-    // mushy zone
+	// Linear interpolation in mushy region
     const double w = (T - T_solidus) / (T_liquidus - T_solidus);
-    C.fl = w;
-    C.rho_Na = rho_s_Na + w * (rho_l_Na - rho_s_Na);
-    C.cp_Na = cp_s_Na + w * (cp_l_Na - cp_s_Na);
-    C.k_Na = k_s_Na + w * (k_l_Na - k_s_Na);
 
-    const double Hs = rho_s_Na * cp_s_Na * T_solidus;
-    const double Hl = Hs + rho_l_Na * L_lat_Na;
+    C.fl = w;
+    C.rho_Na = solid_sodium::rho(T) + w * (liquid_sodium::rho(T) - solid_sodium::rho(T));
+    C.cp_Na = solid_sodium::cp(T) + w * (liquid_sodium::cp(T) - solid_sodium::cp(T));
+    C.k_Na = solid_sodium::k(T) + w * (liquid_sodium::k(T) - solid_sodium::k(T));
+
+    const double Hs = solid_sodium::rho(T) * solid_sodium::cp(T) * T_solidus;
+    const double Hl = Hs + liquid_sodium::rho(T) * H_lat;
     C.H_Na = Hs + w * (Hl - Hs);
 }
 
 #pragma endregion
 
-std::ofstream mesh_output(name + "/mesh.txt", std::ios::trunc);
-std::ofstream time_output(name + "/time.txt", std::ios::trunc);
-
 int main() {
 
-    std::vector<Cell> cell(N);
+    // =======================================================================
+    //
+    //                        [VARIABLES AND CONSTANTS]
+    //
+    // =======================================================================
+
+    #pragma region variables_constants
+
+    /// Mathematical constants
+    constexpr double M_PI = 3.14159265358979323846;
+
+    /// Simulation parameters
+    constexpr int N = 100;                  /// Cell number [-]
+    constexpr double L_pipe = 1.0;          /// Length of the pipe domain [m]
+    constexpr double dz = L_pipe / N;        /// Spatial step [m]
+    constexpr double dt = 1e-3;             /// Temporal step [s]
+
+    /// Geometric parameters
+    constexpr double r_o = 0.01335;         /// Outer wall radius [m]
+    constexpr double r_i = 0.0112;          /// Wall-wick interface radius [m]
+    constexpr double r_v = 0.01075;         /// Vapor-wick interface radius [m]
+
+    /// Heat pipe parameters
+    const double evaporator_start = 0.1 * L_pipe;
+    const double evaporator_end = 0.2 * L_pipe;
+    const double condenser_length = 0.2 * L_pipe;
+
+    ///  Solid sodium region
+    const double wick_start = 0.0 * L_pipe;
+    const double wick_end = 1.0 * L_pipe;
+
+    /// Geometric sections and perimeters
+    constexpr double A_w = M_PI * (r_o * r_o - r_i * r_i);
+    constexpr double A_Na = M_PI * (r_i * r_i - r_v * r_v);
+    constexpr double P_ws = 2 * M_PI * r_i;
+
+    ///  BCs
+    constexpr double h_conv = 20.0;             /// Convective heat transfer coefficient [W/m2K]
+    constexpr double T_env = 280.0;             /// Environmental temperature [K]
+    constexpr double emissivity = 0.8;          /// Emissivity [-]
+    constexpr double sigma = 5.67e-8;           /// Stefan-Boltzmann constant [W/m2K4]
+    constexpr double h_ws = 2000000.0;          /// HTC sodium-wall [W/m2K] (placeholder)
+    constexpr double power = 1000.0;            /// Total power [W]
+    constexpr double T_init = 280.0;            /// Initial temperature [K]
+
+    /// Evaporator
+    const double Lh = evaporator_end - evaporator_start;
+    const double delta_h = 0.01;
+    const double Lh_eff = Lh + delta_h;
+    const double q0 = power / (2.0 * M_PI * r_o * Lh_eff);      /// [W/m^2]
+
+    /// Condenser
+    const double delta_c = 0.05;
+    const double condenser_start = L_pipe - condenser_length;
+    const double condenser_end = L_pipe;
+
+    static std::vector<double> z(N);
+
+	// New time step variables
+    std::vector<double> T_w(N);
+	std::vector<double> T_Na(N);
+
+    // Old time step variables
+    std::vector<double> T_w_old(N, T_init);
+    std::vector<double> T_Na_old(N, T_init);
+
+    std::vector<double> q_ow(N, 0.0);     /// Outer wall heat flux [W/m2]
+    std::vector<double> Q_ow(N, 0.0);     /// Outer wall heat source [W/m3]
+
+    // Blocks definition
+    std::vector<SparseBlock> L(N), D(N), R(N);
+    std::vector<VecBlock> Q(N), X(N);
+
+    #pragma endregion
+
+    std::string case_chosen = select_case();
+
+    // Create result folder
+    int new_case = 0;
+    while (true) {
+        case_chosen = "case_" + std::to_string(new_case);
+        if (!std::filesystem::exists(case_chosen)) {
+            std::filesystem::create_directory(case_chosen);
+            break;
+        }
+        new_case++;
+    }
+
+    std::ofstream T_wall_output(case_chosen + "/T_wall.txt", std::ios::trunc);
+    std::ofstream T_sodium_output(case_chosen + "/T_sodium.txt", std::ios::trunc);
 
 	/// Cell center positions
     for (int j = 0; j < N; ++j) z[j] = (j + 0.5) * dz;
+
+    std::ofstream mesh_output(case_chosen + "/mesh.txt", std::ios::app);
+    mesh_output << std::setprecision(8);
+
+    for (int i = 0; i < N; ++i) mesh_output << i * dz << ", ";
+
+    mesh_output.flush();
+    mesh_output.close();
 
     int firstNa = -1;
     int lastNa = -1;
@@ -530,6 +517,8 @@ int main() {
         }
     }
 
+    std::vector<Cell> cell(N);
+
 	/// Initial conditions
     for (int i = 0; i < N; ++i) {
 
@@ -539,15 +528,16 @@ int main() {
         cell[i].T_Na = hasNa ? T_init : 0.0;
         cell[i].fl = 0.0;
 
-        cell[i].rho_Na = hasNa ? rho_s_Na : 0.0;
-        cell[i].cp_Na = hasNa ? cp_s_Na : 0.0;
-        cell[i].k_Na = hasNa ? k_s_Na : 0.0;
+        cell[i].rho_Na = hasNa ? solid_sodium::rho(T_init) : 0.0;
+        cell[i].cp_Na = hasNa ? solid_sodium::cp(T_init) : 0.0;
+        cell[i].k_Na = hasNa ? solid_sodium::k(T_init) : 0.0;
         cell[i].H_Na = hasNa ? cell[i].rho_Na * cell[i].cp_Na * T_init : 0.0;
     }
 
 	bool all_melted = false;
 
-    while(all_melted == false){
+	// Temporal loop
+    while(all_melted == false) {
 
 		/// Power distribution along the wall
         for(int i = 0; i < N; ++i) {
@@ -589,6 +579,8 @@ int main() {
 
             const bool hasNa = (i >= firstNa && i <= lastNa);
 
+            const double Cw = cell[i].T_w * steel::cp(cell[i].T_w) * A_w * dz;
+            const double Kw = steel::k(cell[i].T_w) * A_w;
             const double aw = Kw / (dz * dz);
 
             double aNa = 0.0;
@@ -604,9 +596,9 @@ int main() {
 
                 double dfdT = 0.0;
                 if (cell[i].fl > 0.0 && cell[i].fl < 1.0)
-                    dfdT = 1.0 / (T_liquidus - T_solidus);
+                    dfdT = 1.0 / (solid_sodium::T_liquidus - solid_sodium::T_solidus);
 
-                const double dH_dT = cell[i].rho_Na * (cell[i].cp_Na + L_lat_Na * dfdT);
+                const double dH_dT = cell[i].rho_Na * (cell[i].cp_Na + solid_sodium::H_lat * dfdT);
 
                 CNa_eff = dH_dT * A_Na * dz;
             }
@@ -629,12 +621,6 @@ int main() {
 
             add(R[i], 0, 0, -aw);
             if (hasNa && i < lastNa) add(R[i], 1, 1, -aNa);
-
-            DenseBlock L_dense = to_dense(L[i]);
-            DenseBlock D_dense = to_dense(D[i]);
-            DenseBlock R_dense = to_dense(R[i]);
-
-            printf("");
         }
 
         // BCs
@@ -660,16 +646,6 @@ int main() {
         add(L[lastNa], 1, 1, -1.0);
         Q[lastNa][1] = 0.0;
 
-        DenseBlock L_dense_f = to_dense(L[firstNa]);
-        DenseBlock D_dense_f = to_dense(D[firstNa]);
-        DenseBlock R_dense_f = to_dense(R[firstNa]);
-
-        DenseBlock L_dense_l = to_dense(L[lastNa]);
-        DenseBlock D_dense_l = to_dense(D[lastNa]);
-        DenseBlock R_dense_l = to_dense(R[lastNa]);
-
-		std::vector<std::vector<double>> dense = build_dense(L, D, R);
-
         solve_block_tridiag(L, D, R, Q, X);
 
         for (int i = 0; i < N; ++i){
@@ -690,12 +666,9 @@ int main() {
         }
     }
 
-    std::vector<double> T_wall(N), T_liq(N);
-
     for (int i = 0; i < N; ++i) {
-        T_wall[i] = cell[i].T_w;
-        T_liq[i] = cell[i].T_Na;
+        
+        T_wall_output << cell[i].T_w << ", ";
+        T_sodium_output << cell[i].T_Na << ", ";
     }
-
-    /// In  CFD: T_w(z)=T_wall, T_l(z)=T_liq, T_v(z)=T_liq, p(z)=p_sat(T_liq), u=0
 }
