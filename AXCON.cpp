@@ -519,6 +519,12 @@ int main() {
 	// Temporal loop
     for (int n = 0; n < nSteps; ++n) {
 
+        for (int i = 0; i < N; i++) {
+            L[i].row.clear(); L[i].col.clear(); L[i].val.clear();
+            D[i].row.clear(); D[i].col.clear(); D[i].val.clear();
+            R[i].row.clear(); R[i].col.clear(); R[i].val.clear();
+        }
+
         dt = dt_user;
         dt *= std::pow(0.5, halves);
 
