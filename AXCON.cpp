@@ -355,7 +355,7 @@ int main() {
     constexpr double L_pipe = 1.0;          /// Length of the pipe domain [m]
     constexpr double dz = L_pipe / N;       /// Spatial step [m]
     constexpr double dt_user = 10;                       /// Temporal step [s]
-	constexpr double maxPicard = 100;       /// Maximum Picard iterations
+	constexpr double max_picard = 100;       /// Maximum Picard iterations
 	constexpr double picTolerance = 1e-4;   /// Picard convergence tolerance
 	constexpr int nvar = B * N;             /// Total number of variables
     constexpr int nSteps = 1e10;
@@ -504,9 +504,16 @@ int main() {
 
 	bool all_melted = false;
 
+    // Number of times the time step has been halved
     int halves = 0;
+
+	// L1 error for picard convergence
     double L1 = 0.0;
+
+    // Actual time step
     double dt;
+
+    // Total time elapsed
 	double time_total = 0.0;
 
 	// Temporal loop
@@ -525,9 +532,7 @@ int main() {
         int pic = 0;        /// Outside to check if convergence is reached
 
         /// Picard iterations
-        for (pic = 0; pic < maxPicard; pic++) {
-
-
+        for (pic = 0; pic < max_picard; pic++) {
 
             // T_iter = T (new)
             T_w_iter = T_w;
@@ -668,6 +673,7 @@ int main() {
 
             // Calculate Picard error
             L1 = 0.0;
+
             double Aold, Anew, denom, eps;
 
             for (int i = 0; i < N; ++i) {
@@ -690,9 +696,9 @@ int main() {
                 break;                  // Picard converged
             }
 
+            // Update Picard values (iter = new)
             for(int i = 0 ; i < N; ++i) {
 
-				// T_iter = T (new)
                 T_w_iter = T_w;
                 T_Na_iter = T_Na;
 
@@ -736,10 +742,10 @@ int main() {
             }
         }
 
-        // Picard converged
-        if (pic != maxPicard) {
+        // Picard converged or max iterations reached
+        if (pic != max_picard) {
 
-            // T_old = T_new
+            // Update n values (old = new)
             T_w_old = T_w;
             rho_w_old = rho_w;
             cp_w_old = cp_w;
@@ -753,8 +759,8 @@ int main() {
             H_Na_old = H_Na;
 
             time_total += dt;
-        }
-        else {
+
+        } else {
 
             // Rollback to previous time step
             // T_new = T_old
