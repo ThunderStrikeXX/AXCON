@@ -27,7 +27,7 @@ bool warnings = false;
 
 #pragma region solving_functions
 
-constexpr int B = 2;  /// Block dimension
+constexpr int B = 2;  // Block dimension
 
 // Definition of data structures 
 struct SparseBlock {
@@ -347,58 +347,66 @@ int main() {
 
     #pragma region variables_constants
 
-    /// Mathematical constants
+    // Mathematical constants
     constexpr double M_PI = 3.14159265358979323846;
 
-    /// Simulation parameters
-    constexpr int N = 20;                  /// Cell number [-]
-    constexpr double L_pipe = 1.0;          /// Length of the pipe domain [m]
-    constexpr double dz = L_pipe / N;       /// Spatial step [m]
-    constexpr double dt_user = 10;                       /// Temporal step [s]
-	constexpr double max_picard = 100;       /// Maximum Picard iterations
-	constexpr double picTolerance = 1e-4;   /// Picard convergence tolerance
-	constexpr int nvar = B * N;             /// Total number of variables
+    // Simulation parameters
+    constexpr int N = 20;                   // Cell number [-]
+    constexpr double L_pipe = 1.0;          // Length of the pipe domain [m]
+    constexpr double dz = L_pipe / N;       // Spatial step [m]
+    constexpr double dt_user = 10;          // Temporal step [s]
+	constexpr double max_picard = 100;      // Maximum Picard iterations
+	constexpr double picTolerance = 1e-4;   // Picard convergence tolerance
+	constexpr int nvar = B * N;             // Total number of variables
     constexpr int nSteps = 1e10;
 
-    /// Geometric parameters
-    constexpr double r_o = 0.01335;         /// Outer wall radius [m]
-    constexpr double r_i = 0.0112;          /// Wall-wick interface radius [m]
-    constexpr double r_v = 0.01075;         /// Vapor-wick interface radius [m]
+    int halves = 0;                         // Number of times the time step has been halved
+    double L1 = 0.0;                        // L1 error for picard convergence
+    double dt;                              // Actual time step
+    double time_total = 0.0;                // Total time elapsed
+    bool all_melted = false;                // Flag to indicate if all sodium has melted
+    int pic = 0;
 
-    /// Heat pipe parameters
+    // Geometric parameters
+    constexpr double r_o = 0.01335;         // Outer wall radius [m]
+    constexpr double r_i = 0.0112;          // Wall-wick interface radius [m]
+    constexpr double r_v = 0.01075;         // Vapor-wick interface radius [m]
+
+    // Heat pipe parameters
     const double evaporator_start = 0.1 * L_pipe;
     const double evaporator_end = 0.2 * L_pipe;
     const double condenser_length = 0.2 * L_pipe;
 
-    ///  Solid sodium region
+    //  Solid sodium region
     const double wick_start = 0.0 * L_pipe;
     const double wick_end = 1.0 * L_pipe;
 
-    /// Geometric sections and perimeters
+    // Geometric sections and perimeters
     constexpr double A_w = M_PI * (r_o * r_o - r_i * r_i);
     constexpr double A_Na = M_PI * (r_i * r_i - r_v * r_v);
     constexpr double P_o = 2 * M_PI * r_o;
 
-    ///  BCs
-    constexpr double h_conv = 20.0;             /// Convective heat transfer coefficient [W/m2K]
-    constexpr double T_env = 280.0;             /// Environmental temperature [K]
-    constexpr double emissivity = 0.8;          /// Emissivity [-]
-    constexpr double sigma = 5.67e-8;           /// Stefan-Boltzmann constant [W/m2K4]
-    constexpr double power = 100.0;            /// Total power [W]
-    constexpr double T_init = 280.0;            /// Initial temperature [K]
+    //  BCs
+    constexpr double h_conv = 20.0;             // Convective heat transfer coefficient [W/m2K]
+    constexpr double T_env = 280.0;             // Environmental temperature [K]
+    constexpr double emissivity = 0.8;          // Emissivity [-]
+    constexpr double sigma = 5.67e-8;           // Stefan-Boltzmann constant [W/m2K4]
+    constexpr double power = 100.0;            // Total power [W]
+    constexpr double T_init = 280.0;            // Initial temperature [K]
 
-    /// Evaporator
+    // Evaporator
     const double Lh = evaporator_end - evaporator_start;
     const double delta_h = 0.01;
     const double Lh_eff = Lh + delta_h;
-    const double q0 = power / (2.0 * M_PI * r_o * Lh_eff);      /// [W/m^2]
+    const double q0 = power / (2.0 * M_PI * r_o * Lh_eff);      // [W/m^2]
 
-    /// Condenser
+    // Condenser
     const double delta_c = 0.05;
     const double condenser_start = L_pipe - condenser_length;
     const double condenser_end = L_pipe;
 
     static std::vector<double> z(N);
+    for (int j = 0; j < N; ++j) z[j] = (j + 0.5) * dz;
 
 	// New time step variables
     std::vector<double> T_w(N);
@@ -466,13 +474,11 @@ int main() {
     std::vector<double> k_Na_iter = k_Na;
     std::vector<double> H_Na_iter = H_Na;
 
-    std::vector<double> q_ow(N, 0.0);     /// Outer wall heat flux [W/m2]
+    std::vector<double> q_ow(N, 0.0);     // Outer wall heat flux [W/m2]
 
     // Blocks definition
     std::vector<SparseBlock> L(N), D(N), R(N);
     std::vector<VecBlock> Q(N), X(N);
-
-    #pragma endregion
 
     std::string case_chosen = select_case();
 
@@ -487,34 +493,21 @@ int main() {
         new_case++;
     }
 
+    std::ofstream mesh_output(case_chosen + "/mesh.txt", std::ios::app);
     std::ofstream time_output(case_chosen + "/time.txt", std::ios::trunc);
     std::ofstream T_wall_output(case_chosen + "/T_wall.txt", std::ios::trunc);
     std::ofstream T_sodium_output(case_chosen + "/T_sodium.txt", std::ios::trunc);
+    std::ofstream f_sodium_output(case_chosen + "/f_sodium.txt", std::ios::trunc);
 
-	/// Cell center positions
-    for (int j = 0; j < N; ++j) z[j] = (j + 0.5) * dz;
-
-    std::ofstream mesh_output(case_chosen + "/mesh.txt", std::ios::app);
     mesh_output << std::setprecision(8);
 
+    // Cell center positions
     for (int i = 0; i < N; ++i) mesh_output << i * dz << " ";
 
     mesh_output.flush();
     mesh_output.close();
 
-	bool all_melted = false;
-
-    // Number of times the time step has been halved
-    int halves = 0;
-
-	// L1 error for picard convergence
-    double L1 = 0.0;
-
-    // Actual time step
-    double dt;
-
-    // Total time elapsed
-	double time_total = 0.0;
+    #pragma endregion
 
 	// Temporal loop
     for (int n = 0; n < nSteps; ++n) {
@@ -529,18 +522,17 @@ int main() {
         const double T_liquidus = solid_sodium::T_liquidus;
         const double H_lat = solid_sodium::H_lat;
 
-        int pic = 0;        /// Outside to check if convergence is reached
-
-        /// Picard iterations
+        // Picard iterations
         for (pic = 0; pic < max_picard; pic++) {
 
+            // Cleaning blocks
             for (int i = 0; i < N; i++) {
                 L[i].row.clear(); L[i].col.clear(); L[i].val.clear();
                 D[i].row.clear(); D[i].col.clear(); D[i].val.clear();
                 R[i].row.clear(); R[i].col.clear(); R[i].val.clear();
             }
 
-            // T_iter = T (new)
+            // Iter variables = new variables
             T_w_iter = T_w;
             rho_w_iter = rho_w;
             cp_w_iter = cp_w;
@@ -553,7 +545,7 @@ int main() {
             k_Na_iter = k_Na;
             H_Na_iter = H_Na;
 
-            /// Loop on nodes
+            // Loop on nodes
             for (int i = 1; i < N - 1; ++i) {
 
                 const double zi = z[i];
@@ -570,9 +562,9 @@ int main() {
                     q_ow[i] = 0.5 * q0 * (1.0 + std::cos(M_PI * x));
                 }
 
-                double conv = h_conv * (T_w_iter[i] - T_env);           /// [W/m^2]
+                double conv = h_conv * (T_w_iter[i] - T_env);           // [W/m^2]
                 double irr = emissivity * sigma *
-                    (std::pow(T_w_iter[i], 4) - std::pow(T_env, 4));    /// [W/m^2]
+                    (std::pow(T_w_iter[i], 4) - std::pow(T_env, 4));    // [W/m^2]
 
                 if (zi >= condenser_start && zi < condenser_start + delta_c) {
                     double x = (zi - condenser_start) / delta_c;
@@ -585,15 +577,15 @@ int main() {
                 
                 const bool hasNa = (i >= firstNa && i <= lastNa);
 
-                const double k_w = steel::k(T_w_iter[i]);           /// W/mK   
-                const double rho_w = steel::rho(T_w_iter[i]);       /// kg/m3
-			    const double cp_w = steel::cp(T_w_iter[i]);         /// J/kgK
+                const double k_w = steel::k(T_w_iter[i]);           // [W/mK]   
+                const double rho_w = steel::rho(T_w_iter[i]);       // [kg/m3]
+			    const double cp_w = steel::cp(T_w_iter[i]);         // [J/kgK]
 
-			    const double C_w = rho_w * cp_w * A_w;      /// J/mK
-                const double K_w = k_w * A_w;               /// Wm/K
-                const double a_w = K_w / (dz * dz);         /// W/mK
+			    const double C_w = rho_w * cp_w * A_w;              // [J/mK]
+                const double K_w = k_w * A_w;                       // [Wm/K]
+                const double a_w = K_w / (dz * dz);                 // [W/mK]
 
-			    const double T_Na = T_Na_iter[i];           /// K
+			    const double T_Na = T_Na_iter[i];                   // [K]
                 double a_Na = 0.0;
                 double K_Na = 0.0;
                 double C_Na = 0.0;
@@ -603,19 +595,19 @@ int main() {
 
                 if (hasNa) {
 
-                    const double k_Na = k_Na_iter[i];        /// W/mK
-				    const double rho_Na = rho_Na_iter[i];    /// kg/m3
-                    const double cp_Na = cp_Na_iter[i];      /// J/kgK
+                    const double k_Na = k_Na_iter[i];               // [W/mK]
+				    const double rho_Na = rho_Na_iter[i];           // [kg/m3]
+                    const double cp_Na = cp_Na_iter[i];             // [J/kgK]
 
-                    C_Na = rho_Na * cp_Na * A_Na;      /// J/mK
-                    K_Na = k_Na * A_Na;                /// Wm/K
-                    a_Na = K_Na / (dz * dz);           /// W/mK
+                    C_Na = rho_Na * cp_Na * A_Na;                   // [J/mK]
+                    K_Na = k_Na * A_Na;                             // [Wm/K]
+                    a_Na = K_Na / (dz * dz);                        // [W/mK]
 
 				    const double R_tot = 
                         + std::log(r_o / r_i) / (2 * M_PI * k_w) 
-                        + std::log(r_i / r_v) / (2 * M_PI * k_Na);   /// mK/W
+                        + std::log(r_i / r_v) / (2 * M_PI * k_Na);  // [mK/W]
 
-				    h_ws = 1.0 / R_tot;  /// W/mK
+				    h_ws = 1.0 / R_tot;                             // [W/mK]
 
                     double dfdT = 0.0;
                     if (fl_iter[i] > 0.0 && fl_iter[i] < 1.0)
@@ -623,10 +615,10 @@ int main() {
 
                     const double dH_dT = rho_Na * (cp_Na + H_lat * dfdT);
 
-                    C_Na_eff = dH_dT * A_Na;    /// J/mK
+                    C_Na_eff = dH_dT * A_Na;                        // [J/mK]
                 }
 
-                const double D11 = C_w / dt + 2.0 * a_w + h_ws;     /// W/mK
+                const double D11 = C_w / dt + 2.0 * a_w + h_ws;     // [W/mK]
                 const double D12 = -h_ws;
                 const double D21 = -h_ws;
                 const double D22 = (hasNa ? (C_Na_eff / dt + 2.0 * a_Na + h_ws) : 1.0);
@@ -636,14 +628,14 @@ int main() {
                 add(D[i], 1, 0, D21);
                 add(D[i], 1, 1, D22);
 
-                add(L[i], 0, 0, -a_w);                                      /// W/mK
-                if (hasNa && i > firstNa) add(L[i], 1, 1, -a_Na);           /// W/mK
+                add(L[i], 0, 0, -a_w);                                      // W/mK
+                if (hasNa && i > firstNa) add(L[i], 1, 1, -a_Na);           // W/mK
 
-                add(R[i], 0, 0, -a_w);                                      /// W/mK
-                if (hasNa && i < lastNa) add(R[i], 1, 1, -a_Na);            /// W/mK
+                add(R[i], 0, 0, -a_w);                                      // W/mK
+                if (hasNa && i < lastNa) add(R[i], 1, 1, -a_Na);            // W/mK
 
-                Q[i][0] = C_w / dt * T_w_old[i] + q_ow[i] * P_o;            /// W/m
-                Q[i][1] = hasNa ? (C_Na_eff / dt * T_Na_old[i]) : 0.0;      /// W/m
+                Q[i][0] = C_w / dt * T_w_old[i] + q_ow[i] * P_o;            // W/m
+                Q[i][1] = hasNa ? (C_Na_eff / dt * T_Na_old[i]) : 0.0;      // W/m
             }
 
             // BCs
@@ -782,10 +774,12 @@ int main() {
             k_Na = k_Na_old;
             H_Na = H_Na_old;
 
-            halves += 1;      // Reduce time step if max Picard iterations reached
+            halves += 1;        // Reduce time step if max Picard iterations reached
+            n -= 1;             // Repeat time step to maintain output frequency
         }
 
-		/// Check if all sodium is melted
+        /*
+		// Check if all sodium is melted
 		all_melted = true;
         for (int i = 0; i < N; ++i) {
 
@@ -793,6 +787,7 @@ int main() {
 
             if (hasNa && fl[i] < 0.999)  all_melted = false;
         }
+        */
 
         const int output_every = 10;
 
@@ -802,20 +797,27 @@ int main() {
 
                 T_wall_output << T_w[i] << " ";
                 T_sodium_output << T_Na[i] << " ";
+				f_sodium_output << fl[i] << " ";
             }
 
             time_output << time_total << " ";
 
             T_wall_output << "\n";
             T_sodium_output << "\n";
+			f_sodium_output << "\n";
 
             time_output.flush();
+
             T_wall_output.flush();
             T_sodium_output.flush();
+			f_sodium_output.flush();
         }
     }
 
     time_output.close();
     T_wall_output.close();
     T_sodium_output.close();
+	f_sodium_output.close();
+
+    return 0;
 }
