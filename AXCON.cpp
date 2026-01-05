@@ -354,15 +354,15 @@ int main() {
     constexpr int N = 20;                   // Cell number [-]
     constexpr double L_pipe = 1.0;          // Length of the pipe domain [m]
     constexpr double dz = L_pipe / N;       // Spatial step [m]
-    constexpr double dt_user = 10;          // Temporal step [s]
+    constexpr double dt_user = 1e-1;        // Temporal step [s]
 	constexpr double max_picard = 100;      // Maximum Picard iterations
-	constexpr double picTolerance = 1e-4;   // Picard convergence tolerance
+	constexpr double pic_tolerance = 1e-4;  // Picard convergence tolerance
 	constexpr int nvar = B * N;             // Total number of variables
-    constexpr int nSteps = 1e10;
+    constexpr int tot_iter = 1e6;
 
     int halves = 0;                         // Number of times the time step has been halved
     double L1 = 0.0;                        // L1 error for picard convergence
-    double dt;                              // Actual time step
+    double dt = dt_user;                              // Actual time step
     double time_total = 0.0;                // Total time elapsed
     bool all_melted = false;                // Flag to indicate if all sodium has melted
     int pic = 0;
@@ -510,7 +510,7 @@ int main() {
     #pragma endregion
 
 	// Temporal loop
-    for (int n = 0; n < nSteps; ++n) {
+    for (int n = 0; n < tot_iter; ++n) {
 
         dt = dt_user;
         dt *= std::pow(0.5, halves);
@@ -689,11 +689,6 @@ int main() {
                 L1 += eps;
             }
 
-            if (L1 < picTolerance){
-                halves = 0;             // Reset halves if Picard converged
-                break;                  // Picard converged
-            }
-
             // Update Picard values (iter = new)
             for(int i = 0 ; i < N; ++i) {
 
@@ -737,6 +732,11 @@ int main() {
                     const double Hl = Hs + liquid_sodium::rho(T_Na_iter[i]) * H_lat;
                     H_Na[i] = Hs + w * (Hl - Hs);
                 }
+            }
+
+            if (L1 < pic_tolerance) {
+                halves = 0;             // Reset halves if Picard converged
+                break;                  // Picard converged
             }
         }
 
