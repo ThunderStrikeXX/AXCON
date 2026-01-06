@@ -71,11 +71,11 @@ int main() {
     constexpr int N = 20;                               // Cell number [-]
     constexpr double L_pipe = 1.0;                      // Length of the pipe domain [m]
     constexpr double dz = L_pipe / N;                   // Spatial step [m]
-    constexpr double dt_user = 1e-1;                    // Temporal step [s]
+    constexpr double dt_user = 1;                       // Temporal step [s]
 	constexpr double max_picard = 100;                  // Maximum Picard iterations
 	constexpr double pic_tolerance = 1e-4;              // Picard convergence tolerance
 	constexpr int nvar = B * N;                         // Total number of variables
-	constexpr double simulation_time = 10000.0;         // Total simulation time [s]
+	constexpr double simulation_time = 1000.0;         // Total simulation time [s]
 	const int tot_iter = std::floor(simulation_time);   // Total number of time iterations [-]
 
     int halves = 0;                         // Number of times the time step has been halved
@@ -117,7 +117,7 @@ int main() {
     constexpr double P_o = 2 * M_PI * r_o;
 
     // BCs
-    constexpr double h_conv = 20.0;             // Convective heat transfer coefficient [W/m2K]
+    constexpr double h_conv = 1.0;              // Convective heat transfer coefficient [W/m2K]
     constexpr double T_env = 280.0;             // Environmental temperature [K]
     constexpr double emissivity = 0.8;          // Emissivity [-]
     constexpr double sigma = 5.67e-8;           // Stefan-Boltzmann constant [W/m2K4]
@@ -127,6 +127,7 @@ int main() {
     double p_v = p_init;                                // Vapor pressure [Pa]
     double m_v = p_v * V_vapor / (R_Na * T_init);       // Vapor mass [kg]
     double T_v = T_init;                                // Vapor temperature [K]
+    double T_ref = 0.0;
 
     // Evaporator
     const double Lh = evaporator_end - evaporator_start;
@@ -236,6 +237,11 @@ int main() {
     std::ofstream T_sodium_output(case_chosen + "/T_sodium.txt", std::ios::trunc);
     std::ofstream f_sodium_output(case_chosen + "/f_sodium.txt", std::ios::trunc);
 	std::ofstream p_v_output(case_chosen + "/p_v.txt", std::ios::trunc);
+	std::ofstream m_dot_ev_output(case_chosen + "/m_dot_ev.txt", std::ios::trunc);
+	std::ofstream m_dot_co_output(case_chosen + "/m_dot_co.txt", std::ios::trunc);
+	std::ofstream T_v_output(case_chosen + "/T_v.txt", std::ios::trunc);
+	std::ofstream m_v_output(case_chosen + "/m_v.txt", std::ios::trunc);
+	std::ofstream h_ws_output(case_chosen + "/h_ws.txt", std::ios::trunc);
 
     mesh_output << std::setprecision(8);
     for (int i = 0; i < N; ++i) mesh_output << i * dz << " ";
@@ -244,7 +250,7 @@ int main() {
     mesh_output.close();
 
     // Evaporation variables
-    double h_ws = 0.0;
+    std::vector<double> h_ws(N, 0.0);
 
     double m_dot_ev = 0.0;   // [kg/s]
     double m_dot_co = 0.0;   // [kg/s]
@@ -336,7 +342,7 @@ int main() {
                 double C_Na = 0.0;
                 double C_Na_eff = 0.0;
 
-                h_ws = 0.0;   
+                h_ws[i] = 0.0;
 				p_sat = vapor_sodium::P_sat(T_v);
 
                 if (hasNa) {
@@ -353,7 +359,7 @@ int main() {
                         + std::log(r_o / r_i) / (2 * M_PI * k_w) 
                         + std::log(r_i / r_v) / (2 * M_PI * k_Na);  // [mK/W]
 
-				    h_ws = 1.0 / R_tot;                             // [W/mK]
+				    h_ws[i] = 1.0 / R_tot;                             // [W/mK]
 
                     double dfdT = 0.0;
                     if (fl_iter[i] > 0.0 && fl_iter[i] < 1.0)
@@ -364,10 +370,10 @@ int main() {
                     C_Na_eff = dH_dT * A_Na;                        // [J/mK]
                 }
 
-                const double D11 = C_w / dt + 2.0 * a_w + h_ws;     // [W/mK]
-                const double D12 = -h_ws;
-                const double D21 = -h_ws;
-                const double D22 = (hasNa ? (C_Na_eff / dt + 2.0 * a_Na + h_ws) : 1.0);
+                const double D11 = C_w / dt + 2.0 * a_w + h_ws[i];     // [W/mK]
+                const double D12 = -h_ws[i];
+                const double D21 = -h_ws[i];
+                const double D22 = (hasNa ? (C_Na_eff / dt + 2.0 * a_Na + h_ws[i]) : 1.0);
 
                 add(D[i], 0, 0, D11);
                 add(D[i], 0, 1, D12);
@@ -387,12 +393,12 @@ int main() {
 
                 // se evapora localmente
                 if (fl[i] > f_conn && p_v > p_sat + dP_on) {
-                    Q_phase -= h_ws * (T_w_iter[i] - T_Na_iter[i]); // sink
+                    Q_phase -= h_ws[i] * (T_w_iter[i] - T_Na_iter[i]); // sink
                 }
 
                 // se condensa
                 if (fl[i] > f_conn && p_v < p_sat - dP_off) {
-                    Q_phase += h_ws * (T_w_iter[i] - T_Na_iter[i]); // source
+                    Q_phase += h_ws[i] * (T_w_iter[i] - T_Na_iter[i]); // source
                 }
 
                 // aggiunta alla RHS sodio
@@ -499,7 +505,7 @@ int main() {
             m_dot_co = 0.0;   // [kg/s]
 
             // Temperatura di riferimento vapore (media evaporatore)
-            double T_ref = 0.0;
+            T_ref = 0.0;
             int nref = 0;
             for (int i = 0; i < N; ++i) {
                 if (z[i] >= evaporator_start && z[i] <= evaporator_end && fl[i] > f_conn) {
@@ -510,43 +516,6 @@ int main() {
 
             if (nref > 0) T_ref /= nref;
             else T_ref = T_v;
-
-            // Saturazione
-            const double p_sat = vapor_sodium::P_sat(T_ref);
-
-            // Loop celle: calcolo flussi di massa
-            for (int i = 0; i < N; ++i) {
-
-                if (fl[i] < f_conn) continue; // niente liquido, niente fase
-
-                const double T_int = T_Na[i];
-                const double h_fg = vapor_sodium::h_vap_sodium(T_int);
-
-                // Potenza disponibile parete->sodio (per cella)
-                const double Q_ws = h_ws * (T_w[i] - T_Na[i]) * dz; // [W]
-
-                // Evaporazione
-                if (p_v > p_sat + dP_on && Q_ws > 0.0) {
-                    const double md = Q_ws / h_fg;
-                    m_dot_ev += md;
-                }
-
-                // Condensazione
-                if (p_v < p_sat - dP_off && Q_ws < 0.0) {
-                    const double md = (-Q_ws) / h_fg;
-                    m_dot_co += md;
-                }
-            }
-
-            // Aggiornamento massa vapore
-            m_v += dt * (m_dot_ev - m_dot_co);
-            m_v = std::max(m_v, 0.0);
-
-            // Aggiorna temperatura vapore (scelta semplice)
-            T_v = T_ref;
-
-            // EOS gas ideale
-            p_v = std::max(p_init, m_v * R_Na * T_v / V_vapor);
 
             if (L1 < pic_tolerance) {
                 halves = 0;             // Reset halves if Picard converged
@@ -569,6 +538,43 @@ int main() {
             cp_Na_old = cp_Na;
             k_Na_old = k_Na;
             H_Na_old = H_Na;
+
+            // Saturazione
+            const double p_sat = vapor_sodium::P_sat(T_ref);
+
+            // Calculation mass fluxes
+            for (int i = 0; i < N; ++i) {
+
+                if (fl[i] < f_conn) continue; // No liquid, no phase change
+
+                const double T_int = T_Na[i];
+                const double h_fg = vapor_sodium::h_vap_sodium(T_int);
+
+                // Potenza disponibile parete->sodio (per cella)
+                const double Q_ws = h_ws[i] * (T_w[i] - T_Na[i]) * dz; // [W]
+
+                // Evaporazione
+                if (p_v < p_sat + 1 && Q_ws > 0.0) {
+                    const double md = Q_ws / h_fg;
+                    m_dot_ev += md;
+                }
+
+                // Condensazione
+                if (p_v > p_sat - 2 && Q_ws < 0.0) {
+                    const double md = (-Q_ws) / h_fg;
+                    m_dot_co += md;
+                }
+            }
+
+            // Aggiornamento massa vapore
+            m_v += dt * (m_dot_ev - m_dot_co);
+            m_v = std::max(m_v, 0.0);
+
+            // Aggiorna temperatura vapore (scelta semplice)
+            T_v = T_ref;
+
+            // EOS gas ideale
+            p_v = std::max(1e-2, m_v * R_Na * T_v / V_vapor);
 
             bool HP_active =
                 (m_dot_ev > 0.0) &&
@@ -617,20 +623,32 @@ int main() {
                 T_wall_output << T_w[i] << " ";
                 T_sodium_output << T_Na[i] << " ";
 				f_sodium_output << fl[i] << " ";
+				h_ws_output << h_ws[i] << " ";
             }
 
             time_output << time_total << " ";
             p_v_output << p_v << " ";
+			m_dot_ev_output << m_dot_ev << " ";
+			m_dot_co_output << m_dot_co << " ";
+			T_v_output << T_v << " ";
+			m_v_output << m_v << " ";
 
             T_wall_output << "\n";
             T_sodium_output << "\n";
 			f_sodium_output << "\n";
+			h_ws_output << "\n";
 
             time_output.flush();
 
             T_wall_output.flush();
             T_sodium_output.flush();
 			f_sodium_output.flush();
+			p_v_output.flush();
+			m_dot_ev_output.flush();
+			m_dot_co_output.flush();
+			T_v_output.flush();
+			m_v_output.flush();
+			h_ws_output.flush();
         }
     }
 
@@ -638,6 +656,12 @@ int main() {
     T_wall_output.close();
     T_sodium_output.close();
 	f_sodium_output.close();
+	p_v_output.close();
+	m_dot_ev_output.close();
+	m_dot_co_output.close();
+	T_v_output.close();
+	m_v_output.close();
+	h_ws_output.close();
 
     return 0;
 }
