@@ -15,292 +15,10 @@
 
 bool warnings = false;
 
-#include "libs/steel.h"
-#include "libs/liquid_sodium.h"
-#include "libs/solid_sodium.h"
-
-// =======================================================================
-//
-//                          [VARIOUS ALGORITHMS]
-//
-// =======================================================================
-
-#pragma region solving_functions
-
-constexpr int B = 2;  // Block dimension
-
-// Definition of data structures 
-struct SparseBlock {
-    std::vector<int> row;
-    std::vector<int> col;
-    std::vector<double> val;
-};
-
-using DenseBlock = std::array<std::array<double, B>, B>;
-using VecBlock = std::array<double, B>;
-
-// ------------------------- Utility dense -------------------------
-
-// Converts a sparse matrix S to a dense matrix M
-DenseBlock to_dense(const SparseBlock& S) {
-    DenseBlock M{};
-    for (std::size_t k = 0; k < S.val.size(); ++k) {
-        int i = S.row[k];
-        int j = S.col[k];
-        M[i][j] = S.val[k];
-    }
-    return M;
-}
-
-// Executes the application of a dense matrix A to a vector x to get a vector y
-void matvec(const DenseBlock& A, const double x[B], double y[B]) {
-    for (int i = 0; i < B; ++i) {
-        double s = 0.0;
-        for (int j = 0; j < B; ++j)
-            s += A[i][j] * x[j];
-        y[i] = s;
-    }
-}
-
-// Executes the multiplication between a dense matrix A and a dense matrix B to get a dense matrix C
-void matmul(const DenseBlock& A, const DenseBlock& Bm, DenseBlock& C) {
-    for (int i = 0; i < B; ++i)
-        for (int j = 0; j < B; ++j) {
-            double s = 0.0;
-            for (int k = 0; k < B; ++k)
-                s += A[i][k] * Bm[k][j];
-            C[i][j] = s;
-        }
-}
-
-// Executes the subtraction of a matrix Bm from a matrix A
-void subtract_inplace(DenseBlock& A, const DenseBlock& Bm) {
-    for (int i = 0; i < B; ++i)
-        for (int j = 0; j < B; ++j)
-            A[i][j] -= Bm[i][j];
-}
-
-// ------------------------- LU with pivoting -------------------------
-
-// In-place LU factorization with partial pivoting, storing L_pipe below and U on/above the diagonal.
-void lu_factor(DenseBlock& A, std::array<int, B>& piv) {
-    for (int i = 0; i < B; ++i)
-        piv[i] = i;
-
-    for (int k = 0; k < B; ++k) {
-
-        // Pivot
-        int p = k;
-        double maxv = std::fabs(A[k][k]);
-        for (int i = k + 1; i < B; ++i) {
-            double v = std::fabs(A[i][k]);
-            if (v > maxv) {
-                maxv = v;
-                p = i;
-            }
-        }
-
-        if (maxv == 0.0)
-            throw std::runtime_error("LU: singular matrix");
-
-        // Rows swapping
-        if (p != k) {
-            std::swap(piv[k], piv[p]);
-            for (int j = 0; j < B; ++j)
-                std::swap(A[k][j], A[p][j]);
-        }
-
-        // Elimination
-        for (int i = k + 1; i < B; ++i) {
-            A[i][k] /= A[k][k];
-            double lik = A[i][k];
-            for (int j = k + 1; j < B; ++j)
-                A[i][j] -= lik * A[k][j];
-        }
-    }
-}
-
-// Solves Ax = b using the in-place LU factorization (with pivoting) via forward and backward substitution.
-void lu_solve_vec(const DenseBlock& LU, const std::array<int, B>& piv,
-    const double b_in[B], double x[B]) {
-
-    // Applies pivot to b
-    double y[B];
-    for (int i = 0; i < B; ++i)
-        y[i] = b_in[piv[i]];
-
-    // Ly = Pb (forward)
-    for (int i = 0; i < B; ++i) {
-        for (int j = 0; j < i; ++j)
-            y[i] -= LU[i][j] * y[j];
-    }
-
-    // Ux = y (backward)
-    for (int i = B - 1; i >= 0; --i) {
-        for (int j = i + 1; j < B; ++j)
-            y[i] -= LU[i][j] * x[j];
-        x[i] = y[i] / LU[i][i];
-    }
-}
-
-// Solves LU·X = P·B column-wise by applying the LU-based vector solver to each column of B.
-void lu_solve_mat(const DenseBlock& LU, const std::array<int, B>& piv,
-    const DenseBlock& Bm, DenseBlock& X) {
-
-    for (int col = 0; col < B; ++col) {
-        double b_col[B];
-        double x_col[B];
-
-        for (int i = 0; i < B; ++i)
-            b_col[i] = Bm[i][col];
-
-        lu_solve_vec(LU, piv, b_col, x_col);
-
-        for (int i = 0; i < B; ++i)
-            X[i][col] = x_col[i];
-    }
-}
-
-// ------------------------- Solve block-tridiagonal -------------------------
-
-// Block Thomas solver: performs forward elimination and back substitution on a block-tridiagonal system using per-block LU factorizations.
-void solve_block_tridiag(
-    const std::vector<SparseBlock>& L_pipe,
-    const std::vector<SparseBlock>& D,
-    const std::vector<SparseBlock>& R,
-    const std::vector<VecBlock>& Q,
-    std::vector<VecBlock>& X) {
-    const int Nx = static_cast<int>(D.size());
-    if (Nx == 0)
-        return;
-
-    // Dense copy of the blocks
-    std::vector<DenseBlock> Dd(Nx);
-    std::vector<DenseBlock> Ld(Nx);
-    std::vector<DenseBlock> Rd(Nx);
-
-    for (int i = 0; i < Nx; ++i) {
-        Dd[i] = to_dense(D[i]);
-        if (i > 0)     Ld[i] = to_dense(L_pipe[i]);
-        if (i < Nx - 1)  Rd[i] = to_dense(R[i]);
-    }
-
-    std::vector<VecBlock> Qm = Q;             // Q changed during forward
-    X.assign(Nx, VecBlock{});                 // Solution
-
-    std::vector<std::array<int, B>> piv(Nx);
-    std::vector<bool> factored(Nx, false);
-
-    // -------- Forward elimination --------
-    for (int i = 1; i < Nx; ++i) {
-        int im1 = i - 1;
-
-        if (!factored[im1]) {
-            lu_factor(Dd[im1], piv[im1]);
-            factored[im1] = true;
-        }
-
-        // Solve D[im1] * Xtemp = R[im1]
-        DenseBlock Xtemp;
-        lu_solve_mat(Dd[im1], piv[im1], Rd[im1], Xtemp);
-
-        // D[i] = D[i] - L_pipe[i] * Xtemp
-        DenseBlock L_X;
-        matmul(Ld[i], Xtemp, L_X);
-
-        subtract_inplace(Dd[i], L_X);
-
-        // Solve D[im1] * y = Qm[im1]
-        double y[B], q_prev[B];
-        for (int k = 0; k < B; ++k)
-            q_prev[k] = Qm[im1][k];
-        lu_solve_vec(Dd[im1], piv[im1], q_prev, y);
-
-        // Qm[i] = Qm[i] - L_pipe[i] * y
-        double Ly[B];
-        matvec(Ld[i], y, Ly);
-        for (int k = 0; k < B; ++k)
-            Qm[i][k] -= Ly[k];
-    }
-
-    // -------- Backward substitution --------
-
-    // Last block
-    if (!factored[Nx - 1]) {
-        lu_factor(Dd[Nx - 1], piv[Nx - 1]);
-        factored[Nx - 1] = true;
-    }
-    {
-        double rhs[B];
-        double sol[B];
-        for (int k = 0; k < B; ++k)
-            rhs[k] = Qm[Nx - 1][k];
-        lu_solve_vec(Dd[Nx - 1], piv[Nx - 1], rhs, sol);
-        for (int k = 0; k < B; ++k)
-            X[Nx - 1][k] = sol[k];
-    }
-
-    // Previous blocks
-    for (int i = Nx - 2; i >= 0; --i) {
-        if (!factored[i]) {
-            lu_factor(Dd[i], piv[i]);
-            factored[i] = true;
-        }
-
-        double RX[B];
-        matvec(Rd[i], X[i + 1].data(), RX);
-
-        double rhs[B];
-        for (int k = 0; k < B; ++k)
-            rhs[k] = Qm[i][k] - RX[k];
-
-        double sol[B];
-        lu_solve_vec(Dd[i], piv[i], rhs, sol);
-        for (int k = 0; k < B; ++k)
-            X[i][k] = sol[k];
-    }
-}
-
-// Add triplet to sparse block
-auto add = [&](SparseBlock& B, int p, int q, double v) {
-    B.row.push_back(p);
-    B.col.push_back(q);
-    B.val.push_back(v);
-    };
-
-// Builds the full dense matrix from the sparse block-tridiagonal representation
-std::vector<std::vector<double>> build_dense(
-    const std::vector<SparseBlock>& Lb,
-    const std::vector<SparseBlock>& Db,
-    const std::vector<SparseBlock>& Rb) {
-    const int Nblocks = Db.size();
-    const int n = 2 * Nblocks;
-
-    std::vector<std::vector<double>> M(n, std::vector<double>(n, 0.0));
-
-    auto write_block = [&](int i, int j, const SparseBlock& B) {
-        int row0 = 2 * i;
-        int col0 = 2 * j;
-
-        for (size_t k = 0; k < B.val.size(); k++) {
-            int r = B.row[k];
-            int c = B.col[k];
-            M[row0 + r][col0 + c] += B.val[k];
-        }
-        };
-
-    for (int i = 0; i < Nblocks; i++) {
-        write_block(i, i, Db[i]);
-        if (i > 0)
-            write_block(i, i - 1, Lb[i]);
-        if (i < Nblocks - 1)
-            write_block(i, i + 1, Rb[i]);
-    }
-
-    return M;
-}
-
-#pragma endregion
+#include "steel.h"
+#include "liquid_sodium.h"
+#include "solid_sodium.h"
+#include "vapor_sodium.h"
 
 #pragma region select_case
 
@@ -372,6 +90,18 @@ int main() {
     constexpr double r_i = 0.0112;          // Wall-wick interface radius [m]
     constexpr double r_v = 0.01075;         // Vapor-wick interface radius [m]
 
+	// Vapor core variables (0D model)
+    constexpr double M_Na = 0.02298977;                  // [kg/mol]
+    constexpr double R_univ = 8.314462618;               // [J/mol/K]
+    constexpr double R_Na = R_univ / M_Na;               // [J/kg/K]
+
+    constexpr double dP_on = 2.0;   // [K] isteresi evaporazione
+    constexpr double dP_off = 2.0;   // [K] isteresi condensazione
+    constexpr double f_conn = 0.9;   // soglia liquido "connesso"
+
+    constexpr double V_vapor = M_PI * r_v * r_v * L_pipe;   // [m3] (volume core)
+    constexpr double p_min = 1.0;                           // [Pa] quasi-vuoto iniziale
+
     // Heat pipe parameters
     const double evaporator_start = 0.1 * L_pipe;
     const double evaporator_end = 0.2 * L_pipe;
@@ -393,6 +123,10 @@ int main() {
     constexpr double sigma = 5.67e-8;           // Stefan-Boltzmann constant [W/m2K4]
     constexpr double power = 100.0;            // Total power [W]
     constexpr double T_init = 280.0;            // Initial temperature [K]
+
+    double p_v = p_min;                                  // pressione vapore [Pa]
+    double m_v = p_v * V_vapor / (R_Na * T_init);        // massa vapore [kg]
+    double T_v = T_init;                                 // temperatura vapore [K]
 
     // Evaporator
     const double Lh = evaporator_end - evaporator_start;
@@ -420,6 +154,8 @@ int main() {
     std::vector<double> cp_Na(N);
     std::vector<double> k_Na(N);
     std::vector<double> H_Na(N);
+
+	std::vector<double> P_sat(N, vapor_sodium::P_sat(T_v));
 
     int firstNa = -1;
     int lastNa = -1;
@@ -498,6 +234,7 @@ int main() {
     std::ofstream T_wall_output(case_chosen + "/T_wall.txt", std::ios::trunc);
     std::ofstream T_sodium_output(case_chosen + "/T_sodium.txt", std::ios::trunc);
     std::ofstream f_sodium_output(case_chosen + "/f_sodium.txt", std::ios::trunc);
+	std::ofstream p_sat_output(case_chosen + "/p_sat.txt", std::ios::trunc);
 
     mesh_output << std::setprecision(8);
 
@@ -506,6 +243,11 @@ int main() {
 
     mesh_output.flush();
     mesh_output.close();
+
+    double h_ws = 0.0;
+
+    double m_dot_ev = 0.0;   // [kg/s]
+    double m_dot_co = 0.0;   // [kg/s]
 
     #pragma endregion
 
@@ -591,7 +333,8 @@ int main() {
                 double C_Na = 0.0;
                 double C_Na_eff = 0.0;
 
-                double h_ws = 0.0;                          
+                h_ws = 0.0;   
+				P_sat[i] = vapor_sodium::P_sat(T_Na_iter[i]);
 
                 if (hasNa) {
 
@@ -636,6 +379,21 @@ int main() {
 
                 Q[i][0] = C_w / dt * T_w_old[i] + q_ow[i] * P_o;            // W/m
                 Q[i][1] = hasNa ? (C_Na_eff / dt * T_Na_old[i]) : 0.0;      // W/m
+
+                double Q_phase = 0.0;
+
+                // se evapora localmente
+                if (fl[i] > f_conn && p_v > P_sat[i] + dP_on) {
+                    Q_phase -= h_ws * (T_w_iter[i] - T_Na_iter[i]); // sink
+                }
+
+                // se condensa
+                if (fl[i] > f_conn && p_v < P_sat[i] - dP_off) {
+                    Q_phase += h_ws * (T_w_iter[i] - T_Na_iter[i]); // source
+                }
+
+                // aggiunta alla RHS sodio
+                Q[i][1] += Q_phase * dz;
             }
 
             // BCs
@@ -734,6 +492,59 @@ int main() {
                 }
             }
 
+            m_dot_ev = 0.0;   // [kg/s]
+            m_dot_co = 0.0;   // [kg/s]
+
+            // Temperatura di riferimento vapore (media evaporatore)
+            double T_ref = 0.0;
+            int nref = 0;
+            for (int i = 0; i < N; ++i) {
+                if (z[i] >= evaporator_start && z[i] <= evaporator_end && fl[i] > f_conn) {
+                    T_ref += T_Na[i];
+                    nref++;
+                }
+            }
+
+            if (nref > 0) T_ref /= nref;
+            else T_ref = T_v;
+
+            // Saturazione
+            const double p_sat = vapor_sodium::P_sat(T_ref);
+
+            // Loop celle: calcolo flussi di massa
+            for (int i = 0; i < N; ++i) {
+
+                if (fl[i] < f_conn) continue; // niente liquido, niente fase
+
+                const double T_int = T_Na[i];
+                const double h_fg = vapor_sodium::h_vap_sodium(T_int);
+
+                // Potenza disponibile parete->sodio (per cella)
+                const double Q_ws = h_ws * (T_w[i] - T_Na[i]) * dz; // [W]
+
+                // Evaporazione
+                if (p_v > p_sat + dP_on && Q_ws > 0.0) {
+                    const double md = Q_ws / h_fg;
+                    m_dot_ev += md;
+                }
+
+                // Condensazione
+                if (p_v < p_sat - dP_off && Q_ws < 0.0) {
+                    const double md = (-Q_ws) / h_fg;
+                    m_dot_co += md;
+                }
+            }
+
+            // Aggiornamento massa vapore
+            m_v += dt * (m_dot_ev - m_dot_co);
+            m_v = std::max(m_v, 0.0);
+
+            // Aggiorna temperatura vapore (scelta semplice)
+            T_v = T_ref;
+
+            // EOS gas ideale
+            p_v = std::max(p_min, m_v * R_Na * T_v / V_vapor);
+
             if (L1 < pic_tolerance) {
                 halves = 0;             // Reset halves if Picard converged
                 break;                  // Picard converged
@@ -755,6 +566,11 @@ int main() {
             cp_Na_old = cp_Na;
             k_Na_old = k_Na;
             H_Na_old = H_Na;
+
+            bool HP_active =
+                (m_dot_ev > 0.0) &&
+                (m_dot_co > 0.0) &&
+                (p_v > p_min * 10.0);
 
             time_total += dt;
 
@@ -801,6 +617,7 @@ int main() {
             }
 
             time_output << time_total << " ";
+            p_sat_output << p_v << " ";
 
             T_wall_output << "\n";
             T_sodium_output << "\n";
