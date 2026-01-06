@@ -21,6 +21,9 @@
     <ClCompile Include="lib\solver.cpp">
       <Filter>File di origine</Filter>
     </ClCompile>
+    <ClCompile Include="lib\tdma.cpp">
+      <Filter>File di origine</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib\liquid_sodium.h">
@@ -36,6 +39,9 @@
       <Filter>File di intestazione</Filter>
     </ClInclude>
     <ClInclude Include="lib\solver.h">
+      <Filter>File di intestazione</Filter>
+    </ClInclude>
+    <ClInclude Include="lib\tdma.h">
       <Filter>File di intestazione</Filter>
     </ClInclude>
   </ItemGroup>
