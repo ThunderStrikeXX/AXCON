@@ -58,11 +58,9 @@ std::string select_case() {
 
 int main() {
 
-    // =======================================================================
-    //
-    //                        [VARIABLES AND CONSTANTS]
-    //
-    // =======================================================================
+	// ----------------------------------------------------------------------
+    // VARIABLES AND CONSTANTS
+	// ----------------------------------------------------------------------
 
     #pragma region variables_constants
 
@@ -70,21 +68,22 @@ int main() {
     constexpr double M_PI = 3.14159265358979323846;
 
     // Simulation parameters
-    constexpr int N = 20;                   // Cell number [-]
-    constexpr double L_pipe = 1.0;          // Length of the pipe domain [m]
-    constexpr double dz = L_pipe / N;       // Spatial step [m]
-    constexpr double dt_user = 1e-1;        // Temporal step [s]
-	constexpr double max_picard = 100;      // Maximum Picard iterations
-	constexpr double pic_tolerance = 1e-4;  // Picard convergence tolerance
-	constexpr int nvar = B * N;             // Total number of variables
-    constexpr int tot_iter = 1e6;
+    constexpr int N = 20;                               // Cell number [-]
+    constexpr double L_pipe = 1.0;                      // Length of the pipe domain [m]
+    constexpr double dz = L_pipe / N;                   // Spatial step [m]
+    constexpr double dt_user = 1e-1;                    // Temporal step [s]
+	constexpr double max_picard = 100;                  // Maximum Picard iterations
+	constexpr double pic_tolerance = 1e-4;              // Picard convergence tolerance
+	constexpr int nvar = B * N;                         // Total number of variables
+	constexpr double simulation_time = 10000.0;         // Total simulation time [s]
+	const int tot_iter = std::floor(simulation_time);   // Total number of time iterations [-]
 
     int halves = 0;                         // Number of times the time step has been halved
     double L1 = 0.0;                        // L1 error for picard convergence
-    double dt = dt_user;                              // Actual time step
+    double dt = dt_user;                    // Actual time step
     double time_total = 0.0;                // Total time elapsed
     bool all_melted = false;                // Flag to indicate if all sodium has melted
-    int pic = 0;
+	int pic = 0;                            // Picard iteration counter
 
     // Geometric parameters
     constexpr double r_o = 0.01335;         // Outer wall radius [m]
@@ -92,23 +91,23 @@ int main() {
     constexpr double r_v = 0.01075;         // Vapor-wick interface radius [m]
 
 	// Vapor core variables (0D model)
-    constexpr double M_Na = 0.02298977;                  // [kg/mol]
-    constexpr double R_univ = 8.314462618;               // [J/mol/K]
-    constexpr double R_Na = R_univ / M_Na;               // [J/kg/K]
+    constexpr double M_Na = 0.02298977;     // [kg/mol]
+    constexpr double R_univ = 8.314462618;  // [J/mol/K]
+    constexpr double R_Na = R_univ / M_Na;  // [J/kg/K]
 
-    constexpr double dP_on = 2.0;   // [K] isteresi evaporazione
-    constexpr double dP_off = 2.0;   // [K] isteresi condensazione
-    constexpr double f_conn = 0.9;   // soglia liquido "connesso"
+    constexpr double dP_on = 2.0;       // Hysteresis evaporation [K]
+    constexpr double dP_off = 2.0;      // Hysteresis condensation [K]
+	constexpr double f_conn = 0.9;      // Connected liquid threshold [-]
 
-    constexpr double V_vapor = M_PI * r_v * r_v * L_pipe;   // [m3] (volume core)
-    constexpr double p_min = 1.0;                           // [Pa] quasi-vuoto iniziale
+    constexpr double V_vapor = M_PI * r_v * r_v * L_pipe;   // Core volume [m3]
+    constexpr double p_init = 1.0;                          // Initial pressure (~void) [Pa]
 
     // Heat pipe parameters
     const double evaporator_start = 0.1 * L_pipe;
     const double evaporator_end = 0.2 * L_pipe;
     const double condenser_length = 0.2 * L_pipe;
 
-    //  Solid sodium region
+    // Solid sodium region
     const double wick_start = 0.0 * L_pipe;
     const double wick_end = 1.0 * L_pipe;
 
@@ -117,23 +116,23 @@ int main() {
     constexpr double A_Na = M_PI * (r_i * r_i - r_v * r_v);
     constexpr double P_o = 2 * M_PI * r_o;
 
-    //  BCs
+    // BCs
     constexpr double h_conv = 20.0;             // Convective heat transfer coefficient [W/m2K]
     constexpr double T_env = 280.0;             // Environmental temperature [K]
     constexpr double emissivity = 0.8;          // Emissivity [-]
     constexpr double sigma = 5.67e-8;           // Stefan-Boltzmann constant [W/m2K4]
-    constexpr double power = 100.0;            // Total power [W]
+    constexpr double power = 100.0;             // Total power [W]
     constexpr double T_init = 280.0;            // Initial temperature [K]
 
-    double p_v = p_min;                                  // pressione vapore [Pa]
-    double m_v = p_v * V_vapor / (R_Na * T_init);        // massa vapore [kg]
-    double T_v = T_init;                                 // temperatura vapore [K]
+    double p_v = p_init;                                // Vapor pressure [Pa]
+    double m_v = p_v * V_vapor / (R_Na * T_init);       // Vapor mass [kg]
+    double T_v = T_init;                                // Vapor temperature [K]
 
     // Evaporator
     const double Lh = evaporator_end - evaporator_start;
     const double delta_h = 0.01;
     const double Lh_eff = Lh + delta_h;
-    const double q0 = power / (2.0 * M_PI * r_o * Lh_eff);      // [W/m^2]
+    const double q0 = power / (2.0 * M_PI * r_o * Lh_eff);      // Outer heat flux [W/m^2]
 
     // Condenser
     const double delta_c = 0.05;
@@ -141,7 +140,7 @@ int main() {
     const double condenser_end = L_pipe;
 
     static std::vector<double> z(N);
-    for (int j = 0; j < N; ++j) z[j] = (j + 0.5) * dz;
+    for (int j = 0; j < N; ++j) z[j] = (j + 0.5) * dz;          // Central node positions [m]
 
 	// New time step variables
     std::vector<double> T_w(N);
@@ -156,8 +155,7 @@ int main() {
     std::vector<double> k_Na(N);
     std::vector<double> H_Na(N);
 
-	std::vector<double> P_sat(N, vapor_sodium::P_sat(T_v));
-
+	// Indexes where sodium is present at the beginning
     int firstNa = -1;
     int lastNa = -1;
 
@@ -168,6 +166,7 @@ int main() {
         }
     }
 
+    // Variables initialization
     for (int i = 0; i < N; ++i) {
 
         const bool hasNa = (i >= firstNa && i <= lastNa);
@@ -211,12 +210,13 @@ int main() {
     std::vector<double> k_Na_iter = k_Na;
     std::vector<double> H_Na_iter = H_Na;
 
-    std::vector<double> q_ow(N, 0.0);     // Outer wall heat flux [W/m2]
+    std::vector<double> q_ow(N, 0.0);
 
     // Blocks definition
     std::vector<SparseBlock> L(N), D(N), R(N);
     std::vector<VecBlock> Q(N), X(N);
 
+    // Select case
     std::string case_chosen = select_case();
 
     // Create result folder
@@ -235,26 +235,28 @@ int main() {
     std::ofstream T_wall_output(case_chosen + "/T_wall.txt", std::ios::trunc);
     std::ofstream T_sodium_output(case_chosen + "/T_sodium.txt", std::ios::trunc);
     std::ofstream f_sodium_output(case_chosen + "/f_sodium.txt", std::ios::trunc);
-	std::ofstream p_sat_output(case_chosen + "/p_sat.txt", std::ios::trunc);
+	std::ofstream p_v_output(case_chosen + "/p_v.txt", std::ios::trunc);
 
     mesh_output << std::setprecision(8);
-
-    // Cell center positions
     for (int i = 0; i < N; ++i) mesh_output << i * dz << " ";
 
     mesh_output.flush();
     mesh_output.close();
 
+    // Evaporation variables
     double h_ws = 0.0;
 
     double m_dot_ev = 0.0;   // [kg/s]
     double m_dot_co = 0.0;   // [kg/s]
+
+	double p_sat = vapor_sodium::P_sat(T_init);
 
     #pragma endregion
 
 	// Temporal loop
     for (int n = 0; n < tot_iter; ++n) {
 
+        // Timestep selection
         dt = dt_user;
         dt *= std::pow(0.5, halves);
 
@@ -335,7 +337,7 @@ int main() {
                 double C_Na_eff = 0.0;
 
                 h_ws = 0.0;   
-				P_sat[i] = vapor_sodium::P_sat(T_Na_iter[i]);
+				p_sat = vapor_sodium::P_sat(T_v);
 
                 if (hasNa) {
 
@@ -384,12 +386,12 @@ int main() {
                 double Q_phase = 0.0;
 
                 // se evapora localmente
-                if (fl[i] > f_conn && p_v > P_sat[i] + dP_on) {
+                if (fl[i] > f_conn && p_v > p_sat + dP_on) {
                     Q_phase -= h_ws * (T_w_iter[i] - T_Na_iter[i]); // sink
                 }
 
                 // se condensa
-                if (fl[i] > f_conn && p_v < P_sat[i] - dP_off) {
+                if (fl[i] > f_conn && p_v < p_sat - dP_off) {
                     Q_phase += h_ws * (T_w_iter[i] - T_Na_iter[i]); // source
                 }
 
@@ -544,7 +546,7 @@ int main() {
             T_v = T_ref;
 
             // EOS gas ideale
-            p_v = std::max(p_min, m_v * R_Na * T_v / V_vapor);
+            p_v = std::max(p_init, m_v * R_Na * T_v / V_vapor);
 
             if (L1 < pic_tolerance) {
                 halves = 0;             // Reset halves if Picard converged
@@ -571,7 +573,7 @@ int main() {
             bool HP_active =
                 (m_dot_ev > 0.0) &&
                 (m_dot_co > 0.0) &&
-                (p_v > p_min * 10.0);
+                (p_v > p_init * 10.0);
 
             time_total += dt;
 
@@ -618,7 +620,7 @@ int main() {
             }
 
             time_output << time_total << " ";
-            p_sat_output << p_v << " ";
+            p_v_output << p_v << " ";
 
             T_wall_output << "\n";
             T_sodium_output << "\n";
