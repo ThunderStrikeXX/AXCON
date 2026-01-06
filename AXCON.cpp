@@ -103,7 +103,7 @@ int main() {
 	constexpr double f_conn = 0.9;      // Connected liquid threshold [-]
 
     constexpr double V_vapor = M_PI * r_v * r_v * L_pipe;   // Core volume [m3]
-    constexpr double p_init = 1.0;                          // Initial pressure (~void) [Pa]
+    constexpr double p_init = 1e-10;                          // Initial pressure (~void) [Pa]
 
     // Heat pipe parameters
     const double evaporator_start = 0.1 * L_pipe;
@@ -125,7 +125,7 @@ int main() {
     constexpr double emissivity = 0.8;          // Emissivity [-]
     constexpr double sigma = 5.67e-8;           // Stefan-Boltzmann constant [W/m2K4]
     constexpr double power = 100.0;             // Total power [W]
-    constexpr double T_init = 280.0;            // Initial temperature [K]
+    constexpr double T_init = 300.0;            // Initial temperature [K]
 
     // Evaporator
     const double Lh = evaporator_end - evaporator_start;
@@ -272,7 +272,10 @@ int main() {
     std::vector<double> G_eff(N);
 
 	std::vector<double> Kn(N, 0.01);    // Knudsen number
+    std::vector<double> phi_m(N, 0.0);
+    std::vector<double> rho_v(N, 0.0);
 
+	const double p_X = 1e-5; // Initial guess for vapor pressure [Pa]
     #pragma endregion
 
 	// Temporal loop
@@ -542,15 +545,26 @@ int main() {
             // Calculation mass fluxes
             for (int i = 1; i < N - 1; ++i) {
 
+                rho_v[i] = p_v[i] / (R_Na * T_v[i]);
+                m_v[i] = rho_v[i] * V_vapor;
+
+                const double b = - phi_m[i] / (p_v[i] * std::sqrt(2 / (R_Na * T_v[i])));
+
+                double Omega = 1.0;
+                if (b < 0.1192) Omega = 1.0 + b * std::sqrt(M_PI);
+                else if (b <= 0.9962) Omega = 0.8959 + 2.6457 * b;
+                else Omega = 2.0 * b * std::sqrt(M_PI);
+
 				p_sat[i] = vapor_sodium::P_sat(T_Na[i]);
 
-                if (fl[i] < f_conn) continue; // No liquid, no phase change
+                const double sigma_e = 1.0;
+                const double sigma_c = 1.0;
 
                 const double T_int = T_Na[i];
 
-				const double beta = 1.0 / std::sqrt(2 * M_PI * R_Na * T_int);   // Coefficient [s/m]
-				const double phi_m = beta * (p_sat[i] - p_v[i]);             // Mass flux [kg/m2s]
-				S_m[i] = phi_m * 2.0 / r_v;                                  // Mass source [kg/m3s]
+				const double beta = 1.0 / std::sqrt(2 * M_PI * R_Na * T_int);                   // Coefficient [s/m]
+				phi_m[i] = beta * (sigma_e * p_sat[i] - sigma_c * Omega * p_v[i]);    // Mass flux [kg/m2s]
+				S_m[i] = phi_m[i] < 0 ? -std::min(rho_v[i] / dt, std::abs(phi_m[i] * 2.0 / r_v)) : phi_m[i] * 2.0 / r_v;                                                     // Mass source [kg/m3s]
 
 				const double alpha = 5.0;
 
