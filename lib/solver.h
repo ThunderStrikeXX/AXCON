@@ -25,6 +25,9 @@ struct SparseBlock {
 using DenseBlock = std::array<std::array<double, B>, B>;
 using VecBlock = std::array<double, B>;
 
+// Add triplet to sparse block 
+void add(SparseBlock& B, int p, int q, double v);
+
 // =====================================================
 //                 BASIC LINEAR ALGEBRA
 // =====================================================

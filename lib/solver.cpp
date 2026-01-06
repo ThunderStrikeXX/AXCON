@@ -38,6 +38,12 @@ void subtract_inplace(DenseBlock& A, const DenseBlock& Bm) {
             A[i][j] -= Bm[i][j];
 }
 
+void add(SparseBlock& B, int p, int q, double v) {
+    B.row.push_back(p);
+    B.col.push_back(q);
+    B.val.push_back(v);
+}
+
 // =====================================================
 //                 LU DECOMPOSITION
 // =====================================================
