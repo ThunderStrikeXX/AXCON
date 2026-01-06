@@ -15,6 +15,7 @@
 
 bool warnings = false;
 
+#include "solver.h"
 #include "steel.h"
 #include "liquid_sodium.h"
 #include "solid_sodium.h"
